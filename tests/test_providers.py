@@ -11,6 +11,7 @@ from meetdown.providers import (
     ProviderConfig,
     gemini_generate_content_url,
     infer_provider_from_credentials,
+    normalize_clova_language,
     normalize_provider,
     openai_transcriptions_url,
     provider_model,
@@ -68,7 +69,7 @@ def test_provider_url_builders_accept_base_or_full_urls() -> None:
     )
 
 
-def test_auto_language_does_not_send_clova_language(
+def test_clova_language_is_required_even_when_user_asks_for_auto(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     audio = tmp_path / "meeting.m4a"
@@ -99,7 +100,20 @@ def test_auto_language_does_not_send_clova_language(
 
     params = captured["params"]
     assert params is not None
-    assert "language" not in params
+    assert params["language"] == "ko-KR"
+
+
+def test_normalize_clova_language_accepts_common_aliases() -> None:
+    assert normalize_clova_language("auto") == "ko-KR"
+    assert normalize_clova_language("ko") == "ko-KR"
+    assert normalize_clova_language("ko-kr") == "ko-KR"
+    assert normalize_clova_language("en") == "en-US"
+    assert normalize_clova_language("zh_tw") == "zh-tw"
+
+
+def test_normalize_clova_language_rejects_unknown_code() -> None:
+    with pytest.raises(ValueError, match="--language for clova"):
+        normalize_clova_language("r21r12")
 
 
 def test_gemini_prompt_uses_auto_language_instruction() -> None:
@@ -153,7 +167,7 @@ def test_infer_provider_rejects_generic_key_without_provider_signal(
 def test_resolve_provider_config_uses_generic_url_and_key_for_clova() -> None:
     config = resolve_provider_config(
         provider="clova",
-        language="ko-KR",
+        language="auto",
         timeout_seconds=60,
         word_alignment=False,
         diarization=True,
@@ -163,6 +177,7 @@ def test_resolve_provider_config_uses_generic_url_and_key_for_clova() -> None:
     )
 
     assert config.provider == "clova"
+    assert config.language == "ko-KR"
     assert config.api_url == "https://example.com"
     assert config.api_key == "secret"
 

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import base64
 import json
 import mimetypes
@@ -9,13 +7,17 @@ from pathlib import Path
 
 import httpx
 
-from meetdown.clova import ClovaSpeechError, transcribe_file as transcribe_clova_file
+from meetdown import text as ui_text
+from meetdown.clova import ClovaSpeechError
+from meetdown.clova import transcribe_file as transcribe_clova_file
 from meetdown.constants import (
     CLOVA_API_KEY_ENV_NAMES,
     CLOVA_API_URL_ENV_NAMES,
     CLOVA_AUTO_DETECT_API_KEY_ENV_NAMES,
     CLOVA_COMPLETION_SYNC,
+    CLOVA_DEFAULT_LANGUAGE,
     CLOVA_MODEL_DESCRIPTION,
+    CLOVA_SUPPORTED_LANGUAGES,
     DEFAULT_DIARIZATION,
     GEMINI_API_KEY_ENV_NAMES,
     GEMINI_API_URL_ENV_NAMES,
@@ -28,8 +30,8 @@ from meetdown.constants import (
     MEETDOWN_API_KEY_ENV,
     OPENAI_API_KEY_ENV_NAMES,
     OPENAI_API_URL_ENV_NAMES,
-    OPENAI_AUTO_DETECT_API_KEY_ENV_NAMES,
     OPENAI_AUDIO_TRANSCRIPTIONS_PATH,
+    OPENAI_AUTO_DETECT_API_KEY_ENV_NAMES,
     OPENAI_DEFAULT_API_URL,
     OPENAI_DEFAULT_MODEL,
     OPENAI_DEFAULT_NO_DIARIZATION_MODEL,
@@ -38,10 +40,9 @@ from meetdown.constants import (
     PROVIDER_CLOVA,
     PROVIDER_GEMINI,
     PROVIDER_OPENAI,
-    ProviderName,
     SUPPORTED_PROVIDERS,
+    ProviderName,
 )
-from meetdown import text as ui_text
 from meetdown.json_types import (
     JsonObject,
     as_json_object,
@@ -86,6 +87,39 @@ def normalize_provider(value: str) -> ProviderName:
         if normalized == provider:
             return provider
     raise ValueError(ui_text.provider_must_be_supported())
+
+
+def normalize_clova_language(language: str) -> str:
+    normalized = language.strip()
+    lower = normalized.lower().replace("_", "-")
+    if not normalized or lower == LANGUAGE_AUTO:
+        return CLOVA_DEFAULT_LANGUAGE
+
+    aliases = {
+        "ko": CLOVA_DEFAULT_LANGUAGE,
+        "ko-kr": CLOVA_DEFAULT_LANGUAGE,
+        "kr": CLOVA_DEFAULT_LANGUAGE,
+        "en": "en-US",
+        "en-us": "en-US",
+        "ja": "ja",
+        "jp": "ja",
+        "enko": "enko",
+        "zh": "zh-cn",
+        "zh-cn": "zh-cn",
+        "zh-tw": "zh-tw",
+    }
+    if lower in aliases:
+        return aliases[lower]
+
+    for supported_language in CLOVA_SUPPORTED_LANGUAGES:
+        if normalized == supported_language:
+            return supported_language
+
+    raise ValueError(
+        ui_text.clova_language_must_be_supported(
+            ui_text.comma_list(CLOVA_SUPPORTED_LANGUAGES)
+        )
+    )
 
 
 def _first_env(*names: str) -> str | None:
@@ -218,6 +252,7 @@ def resolve_provider_config(
     if normalized == PROVIDER_CLOVA:
         if model:
             raise ValueError(ui_text.clova_model_not_supported())
+        resolved_language = normalize_clova_language(language)
         resolved_url = _first_value(
             api_url,
             clova_invoke_url,
@@ -234,7 +269,7 @@ def resolve_provider_config(
             raise ValueError(ui_text.clova_missing_api_key())
         return ProviderConfig(
             provider=normalized,
-            language=language,
+            language=resolved_language,
             timeout_seconds=timeout_seconds,
             word_alignment=word_alignment,
             diarization=diarization,
@@ -287,14 +322,14 @@ def transcribe_with_provider(
     if config.provider == PROVIDER_CLOVA:
         if config.api_url is None or config.api_key is None:
             raise ProviderError(ui_text.missing_provider_config(config.provider))
+        language = normalize_clova_language(config.language)
         params: JsonObject = {
             "completion": CLOVA_COMPLETION_SYNC,
             "fullText": True,
             "wordAlignment": config.word_alignment,
             "diarization": {"enable": config.diarization},
+            "language": language,
         }
-        if not _is_auto_language(config.language):
-            params["language"] = config.language
         try:
             return transcribe_clova_file(
                 audio_path,

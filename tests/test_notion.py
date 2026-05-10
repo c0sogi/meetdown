@@ -10,6 +10,8 @@ from meetdown.constants import (
 from meetdown.notion import (
     NotionUploadConfig,
     NotionUploadError,
+    notion_upload_status,
+    notion_upload_url,
     resolve_notion_upload_config,
     upload_markdown_to_notion,
 )
@@ -86,3 +88,14 @@ def test_upload_markdown_to_notion_calls_quick_upload(
         "page_title": "Title",
         "duplicate_strategy": "skip",
     }
+
+
+def test_notion_upload_url_reads_first_page_url() -> None:
+    assert (
+        notion_upload_url([{"object": "page", "url": "https://notion.so/page"}])
+        == "https://notion.so/page"
+    )
+
+
+def test_notion_upload_status_reads_skip_result() -> None:
+    assert notion_upload_status([{"status": "skipped"}]) == "skipped"

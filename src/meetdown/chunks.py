@@ -8,9 +8,9 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Protocol, cast
 
+from meetdown import text as ui_text
 from meetdown.constants import CHUNK_FORMAT_FLAC, CHUNK_FORMAT_MP3, CHUNK_FORMAT_WAV
 from meetdown.json_types import JsonObject, as_json_object, as_number, as_object_list
-from meetdown import text as ui_text
 
 
 class ChunkingError(RuntimeError):

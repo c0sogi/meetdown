@@ -9,6 +9,8 @@ from meetdown.markdown import render_markdown, write_markdown
 from meetdown.notion import (
     NotionUploadConfig,
     NotionUploadError,
+    notion_upload_status,
+    notion_upload_url,
     resolve_notion_upload_config,
     upload_markdown_to_notion,
 )
@@ -28,6 +30,8 @@ __all__ = [
     "ProviderError",
     "__version__",
     "infer_provider_from_credentials",
+    "notion_upload_status",
+    "notion_upload_url",
     "render_markdown",
     "resolve_notion_upload_config",
     "resolve_provider_config",

@@ -1,9 +1,9 @@
 from datetime import datetime
 from pathlib import Path
 
+from meetdown import text as ui_text
 from meetdown.constants import DEFAULT_LANGUAGE, PROCESSING_REPLAY_COMMAND_KEY
 from meetdown.json_types import JsonObject, as_json_object, as_number, as_object_list
-from meetdown import text as ui_text
 
 
 def speaker_token(label: object | None) -> str:

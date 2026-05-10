@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import importlib.util
 import os
 from dataclasses import dataclass
@@ -7,13 +5,14 @@ from importlib import import_module
 from pathlib import Path
 from typing import Callable, cast
 
+from meetdown import text as ui_text
 from meetdown.constants import (
     DEFAULT_NOTION_DUPLICATE_STRATEGY,
     NOTION_PARENT_PAGE_ID_ENV,
     NOTION_TOKEN_ENV,
     NotionDuplicateStrategy,
 )
-from meetdown import text as ui_text
+from meetdown.json_types import as_json_object, as_object_list
 
 
 class NotionUploadError(RuntimeError):
@@ -71,3 +70,36 @@ def upload_markdown_to_notion(
         )
     except Exception as exc:
         raise NotionUploadError(ui_text.notion_upload_failed(exc)) from exc
+
+
+def notion_upload_url(result: object) -> str | None:
+    result_object = as_json_object(result)
+    if result_object is not None:
+        for key in ("url", "public_url"):
+            value = result_object.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return None
+
+    result_items = as_object_list(result)
+    if result_items is not None:
+        for item in result_items:
+            url = notion_upload_url(item)
+            if url is not None:
+                return url
+    return None
+
+
+def notion_upload_status(result: object) -> str | None:
+    result_object = as_json_object(result)
+    if result_object is not None:
+        status = result_object.get("status")
+        return status if isinstance(status, str) and status else None
+
+    result_items = as_object_list(result)
+    if result_items is not None:
+        for item in result_items:
+            status = notion_upload_status(item)
+            if status is not None:
+                return status
+    return None

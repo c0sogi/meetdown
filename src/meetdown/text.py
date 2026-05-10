@@ -1,17 +1,15 @@
-from __future__ import annotations
-
 from collections.abc import Iterable
 
 from meetdown.constants import (
     AUTO_DETECT_API_KEY_ENV_NAMES,
-    CLOVA_SPEECH_SECRET_KEY_ENV,
     CLOVA_SPEECH_INVOKE_URL_ENV,
+    CLOVA_SPEECH_SECRET_KEY_ENV,
     GEMINI_API_KEY_ENV,
     GOOGLE_API_KEY_ENV,
-    OPENAI_API_KEY_ENV,
     LANGUAGE_AUTO,
     NOTION_PARENT_PAGE_ID_ENV,
     NOTION_TOKEN_ENV,
+    OPENAI_API_KEY_ENV,
 )
 
 HELP_DESCRIPTION = """\
@@ -149,6 +147,10 @@ def clova_model_not_supported() -> str:
     return "--model is not supported for clova"
 
 
+def clova_language_must_be_supported(supported: str) -> str:
+    return f"--language for clova must be one of: {supported}"
+
+
 def clova_missing_api_url() -> str:
     return f"--api-url or {CLOVA_SPEECH_INVOKE_URL_ENV} is required for clova"
 
@@ -262,7 +264,7 @@ def notion_extra_missing() -> str:
     return (
         "Notion upload requires the optional notion extra. Install with "
         "'uv pip install \"meetdown[notion]\"' or run with "
-        "'uvx --from \"meetdown[notion]\" meetdown'."
+        "'uvx \"meetdown[notion]\"'."
     )
 
 
@@ -285,7 +287,11 @@ def notion_upload_failed(error: object) -> str:
     return f"Notion upload failed: {error}"
 
 
-def notion_upload_completed() -> str:
+def notion_upload_completed(url: str | None = None, status: str | None = None) -> str:
+    if url:
+        return f"Uploaded Markdown to Notion: {url}"
+    if status:
+        return f"Notion upload {status}."
     return "Uploaded Markdown to Notion."
 
 

@@ -3,6 +3,7 @@ from pathlib import Path
 
 import httpx
 
+from meetdown import text as ui_text
 from meetdown.constants import (
     CLOVA_API_KEY_HEADER_NAME,
     CLOVA_COMPLETION_SYNC,
@@ -11,7 +12,6 @@ from meetdown.constants import (
     DEFAULT_TIMEOUT_SECONDS,
     DEFAULT_WORD_ALIGNMENT,
 )
-from meetdown import text as ui_text
 from meetdown.json_types import JsonObject, as_json_object
 
 

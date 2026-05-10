@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from typing import Final, Literal
 
 ProviderName = Literal["clova", "openai", "gemini"]
@@ -103,6 +101,8 @@ AUTO_DETECT_API_KEY_ENV_NAMES: Final = (
 CLOVA_UPLOAD_ENDPOINT: Final = "/recognizer/upload"
 CLOVA_API_KEY_HEADER_NAME: Final = "X-CLOVASPEECH-API-KEY"
 CLOVA_COMPLETION_SYNC: Final = "sync"
+CLOVA_DEFAULT_LANGUAGE: Final = "ko-KR"
+CLOVA_SUPPORTED_LANGUAGES: Final = ("ko-KR", "ja", "en-US", "enko", "zh-cn", "zh-tw")
 
 COMPRESS_SMALLEST: Final = "smallest"
 COMPRESS_LOSSLESS: Final = "lossless"

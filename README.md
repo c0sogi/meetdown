@@ -20,7 +20,7 @@ Use the optional Notion extra when you want meetdown to upload the saved
 Markdown file to Notion:
 
 ```powershell
-uvx --from "meetdown[notion]" meetdown meeting.m4a -o meeting.md --notion
+uvx "meetdown[notion]" transcribe meeting.m4a -o meeting.md --notion
 ```
 
 For local development:
@@ -59,7 +59,9 @@ uvx meetdown transcribe --help
 Recognition language defaults to `auto`, so meetdown does not force a single
 language when audio contains a mix such as English and Korean. Pass
 `--language ko-KR`, `--language en-US`, or another provider-supported language
-when you want to bias recognition toward one language.
+when you want to bias recognition toward one language. CLOVA Speech requires a
+concrete language, so meetdown sends `ko-KR` for CLOVA when `--language auto` is
+used; aliases such as `ko` and `ko-kr` are normalized to `ko-KR`.
 
 ## Python API
 
@@ -90,18 +92,18 @@ set the Notion destination in environment variables:
 ```powershell
 $env:NOTION_TOKEN="secret_..."
 $env:NOTION_PARENT_PAGE_ID="your-parent-page-id"
-uvx --from "meetdown[notion]" meetdown meeting.m4a -o meeting.md --notion
+uvx "meetdown[notion]" transcribe meeting.m4a -o meeting.md --notion
 ```
 
 When `--notion` is used, meetdown checks for the optional dependency,
 `NOTION_TOKEN`, and a parent page ID before transcription starts. The Markdown
 file is still written first; Notion upload runs only after the local file is
-saved.
+saved. When Notion returns a page URL, meetdown prints it after upload.
 
 You can override the Notion page settings per run:
 
 ```powershell
-uvx --from "meetdown[notion]" meetdown meeting.m4a -o meeting.md --notion --notion-parent-page-id "page-id" --notion-title "Weekly sync" --notion-duplicate-strategy timestamp
+uvx "meetdown[notion]" transcribe meeting.m4a -o meeting.md --notion --notion-parent-page-id "page-id" --notion-title "Weekly sync" --notion-duplicate-strategy timestamp
 ```
 
 ## Providers

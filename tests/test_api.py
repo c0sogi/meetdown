@@ -1,10 +1,12 @@
 from pathlib import Path
 
-import meetdown
 import pytest
+
+import meetdown
 from meetdown import (
     NotionUploadConfig,
     ProviderConfig,
+    notion_upload_url,
     render_markdown,
     transcribe_file,
     upload_markdown_to_notion,
@@ -24,6 +26,7 @@ def test_top_level_exports_public_api() -> None:
     assert callable(write_markdown)
     assert meetdown.NotionUploadConfig is NotionUploadConfig
     assert meetdown.upload_markdown_to_notion is upload_markdown_to_notion
+    assert meetdown.notion_upload_url is notion_upload_url
 
 
 def test_transcribe_file_resolves_config_and_dispatches(

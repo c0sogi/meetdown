@@ -9,15 +9,15 @@ from typer.testing import CliRunner
 from meetdown import text as ui_text
 from meetdown.cli import (
     CliOptions,
-    build_defaults_report,
     build_app,
+    build_defaults_report,
     build_replay_command,
     choose_upload_format,
     default_cli_options,
     mask_secret,
     run,
-    should_use_color,
     should_prepare_whole_file_upload,
+    should_use_color,
 )
 from meetdown.constants import (
     ANSI_BLUE,
@@ -36,7 +36,6 @@ from meetdown.constants import (
 )
 from meetdown.notion import NotionUploadConfig, NotionUploadError
 from meetdown.providers import ProviderConfig
-
 
 runner = CliRunner()
 
@@ -371,6 +370,7 @@ def test_cli_prefights_notion_before_audio_work(
 def test_cli_uploads_to_notion_after_markdown_is_written(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     source = tmp_path / "response.json"
     output = tmp_path / "meeting.md"
@@ -391,7 +391,7 @@ def test_cli_uploads_to_notion_after_markdown_is_written(
         captured["upload_path"] = markdown_path
         captured["upload_config"] = notion_config
         captured["markdown_exists_during_upload"] = Path(markdown_path).is_file()
-        return object()
+        return [{"url": "https://notion.so/meeting"}]
 
     monkeypatch.setattr(
         "meetdown.cli.resolve_notion_upload_config", fake_resolve_notion_upload_config
@@ -426,3 +426,7 @@ def test_cli_uploads_to_notion_after_markdown_is_written(
     assert captured["markdown_exists_during_upload"] is True
     assert captured["upload_path"] == output
     assert captured["upload_config"] == config
+    assert (
+        "Uploaded Markdown to Notion: https://notion.so/meeting"
+        in capsys.readouterr().out
+    )

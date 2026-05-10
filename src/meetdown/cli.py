@@ -16,6 +16,7 @@ from rich.table import Table
 from rich.text import Text
 
 from meetdown import __version__
+from meetdown import text as ui_text
 from meetdown.chunks import (
     ChunkingError,
     chunk_extension,
@@ -37,30 +38,30 @@ from meetdown.constants import (
     ANSI_RESET,
     ANSI_YELLOW,
     APP_NAME,
+    CLOVA_API_KEY_ENV_NAMES,
+    CLOVA_API_URL_ENV_NAMES,
     COLOR_ALWAYS_VALUES,
     COLOR_ENV,
     COLOR_NEVER_VALUES,
     COMPRESS_NONE,
     COMPRESSION_UPLOAD_FORMATS,
-    CLOVA_API_KEY_ENV_NAMES,
-    CLOVA_API_URL_ENV_NAMES,
     DEFAULT_COMPRESS,
     DEFAULT_DIARIZATION,
     DEFAULT_LANGUAGE,
+    DEFAULT_NOTION_DUPLICATE_STRATEGY,
     DEFAULT_OUTPUT_PATH,
     DEFAULT_TIMEOUT_SECONDS,
     DEFAULT_TITLE,
     DEFAULT_WORD_ALIGNMENT,
-    DEFAULT_NOTION_DUPLICATE_STRATEGY,
     GEMINI_API_KEY_ENV,
     GEMINI_API_KEY_ENV_NAMES,
     GEMINI_API_URL_ENV_NAMES,
     GENERIC_API_KEY_PLACEHOLDER,
     GOOGLE_API_KEY_ENV,
+    NO_COLOR_ENV,
     NOTION_DUPLICATE_STRATEGIES,
     NOTION_PARENT_PAGE_ID_ENV,
     NOTION_TOKEN_ENV,
-    NotionDuplicateStrategy,
     OPENAI_API_KEY_ENV,
     OPENAI_API_KEY_ENV_NAMES,
     OPENAI_API_URL_ENV_NAMES,
@@ -69,18 +70,19 @@ from meetdown.constants import (
     PROVIDER_CLOVA,
     PROVIDER_GEMINI,
     PROVIDER_OPENAI,
-    NO_COLOR_ENV,
     SUPPORTED_PROVIDERS,
     TEMP_DIR_PREFIX,
     TERM_DUMB_VALUE,
     TERM_ENV,
+    NotionDuplicateStrategy,
 )
-from meetdown import text as ui_text
 from meetdown.json_types import JsonObject, require_json_object
 from meetdown.markdown import render_markdown, write_markdown
 from meetdown.notion import (
     NotionUploadConfig,
     NotionUploadError,
+    notion_upload_status,
+    notion_upload_url,
     notionit_available,
     resolve_notion_upload_config,
     upload_markdown_to_notion,
@@ -97,7 +99,6 @@ from meetdown.providers import (
     resolve_provider_config,
     transcribe_with_provider,
 )
-
 
 _DEFAULT_SECTION_STYLES = {
     ui_text.DEFAULTS_RUNTIME_SECTION: ANSI_CYAN,
@@ -706,8 +707,7 @@ def build_quickstart_renderable() -> Group:
         "Notion",
         "you want the saved Markdown uploaded after transcription",
         command(
-            f'uvx --from "{APP_NAME}[notion]" {APP_NAME} '
-            "meeting.m4a -o meeting.md --notion"
+            f'uvx "{APP_NAME}[notion]" transcribe meeting.m4a -o meeting.md --notion'
         ),
     )
 
@@ -1025,8 +1025,13 @@ def execute_options(args: CliOptions) -> int:
     _echo(ui_text.wrote_file(written_path))
 
     if notion_config is not None:
-        upload_markdown_to_notion(written_path, notion_config)
-        _echo(ui_text.notion_upload_completed())
+        upload_result = upload_markdown_to_notion(written_path, notion_config)
+        _echo(
+            ui_text.notion_upload_completed(
+                url=notion_upload_url(upload_result),
+                status=notion_upload_status(upload_result),
+            )
+        )
 
     return 0
 
