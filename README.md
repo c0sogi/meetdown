@@ -16,6 +16,13 @@ Run it directly with `uvx`; cloning this repository is not required:
 uvx meetdown meeting.m4a -o meeting.md --api-url "https://your.invoke.url" --api-key "your-secret-key"
 ```
 
+Use the optional Notion extra when you want meetdown to upload the saved
+Markdown file to Notion:
+
+```powershell
+uvx --from "meetdown[notion]" meetdown meeting.m4a -o meeting.md --notion
+```
+
 For local development:
 
 ```powershell
@@ -35,14 +42,18 @@ You can also pass them directly:
 uvx meetdown meeting.m4a -o meeting.md --api-url "https://your.invoke.url" --api-key "your-secret-key"
 ```
 
-Run `meetdown` without arguments, or use `--help`, to see the current defaults
-and provider auto-detection status without transcribing anything. In interactive
-terminals, the defaults are color-coded by area; set `NO_COLOR=1` to keep plain
-text output.
+Run `meetdown` without arguments, or use `--help`, to see the command list
+without transcribing anything. Use `quickstart` for examples and `defaults` for
+the current provider auto-detection status. In interactive terminals, the
+defaults view is color-coded by area; set `NO_COLOR=1` to keep plain text
+output.
 
 ```powershell
 uvx meetdown
 uvx meetdown --help
+uvx meetdown quickstart
+uvx meetdown defaults
+uvx meetdown transcribe --help
 ```
 
 Recognition language defaults to `auto`, so meetdown does not force a single
@@ -70,6 +81,28 @@ write_markdown("meeting.md", markdown)
 `transcribe_file` uses the same provider resolution rules as the CLI. For more
 control, import `resolve_provider_config` and `transcribe_with_provider` from
 `meetdown` and keep the provider config in your own application code.
+
+## Notion upload
+
+Notion upload is optional. Install or run meetdown with the `notion` extra, then
+set the Notion destination in environment variables:
+
+```powershell
+$env:NOTION_TOKEN="secret_..."
+$env:NOTION_PARENT_PAGE_ID="your-parent-page-id"
+uvx --from "meetdown[notion]" meetdown meeting.m4a -o meeting.md --notion
+```
+
+When `--notion` is used, meetdown checks for the optional dependency,
+`NOTION_TOKEN`, and a parent page ID before transcription starts. The Markdown
+file is still written first; Notion upload runs only after the local file is
+saved.
+
+You can override the Notion page settings per run:
+
+```powershell
+uvx --from "meetdown[notion]" meetdown meeting.m4a -o meeting.md --notion --notion-parent-page-id "page-id" --notion-title "Weekly sync" --notion-duplicate-strategy timestamp
+```
 
 ## Providers
 

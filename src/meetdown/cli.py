@@ -1,10 +1,19 @@
-import argparse
 import json
 import os
 import sys
 import tempfile
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
-from typing import Sequence, TextIO
+from typing import Annotated, Sequence, TextIO
+
+import click
+import typer
+from rich import box
+from rich.console import Console, Group
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 
 from meetdown import __version__
 from meetdown.chunks import (
@@ -28,12 +37,10 @@ from meetdown.constants import (
     ANSI_RESET,
     ANSI_YELLOW,
     APP_NAME,
-    CHUNK_FORMAT_CHOICES,
     COLOR_ALWAYS_VALUES,
     COLOR_ENV,
     COLOR_NEVER_VALUES,
     COMPRESS_NONE,
-    COMPRESSION_PRESETS,
     COMPRESSION_UPLOAD_FORMATS,
     CLOVA_API_KEY_ENV_NAMES,
     CLOVA_API_URL_ENV_NAMES,
@@ -44,9 +51,17 @@ from meetdown.constants import (
     DEFAULT_TIMEOUT_SECONDS,
     DEFAULT_TITLE,
     DEFAULT_WORD_ALIGNMENT,
+    DEFAULT_NOTION_DUPLICATE_STRATEGY,
+    GEMINI_API_KEY_ENV,
     GEMINI_API_KEY_ENV_NAMES,
     GEMINI_API_URL_ENV_NAMES,
     GENERIC_API_KEY_PLACEHOLDER,
+    GOOGLE_API_KEY_ENV,
+    NOTION_DUPLICATE_STRATEGIES,
+    NOTION_PARENT_PAGE_ID_ENV,
+    NOTION_TOKEN_ENV,
+    NotionDuplicateStrategy,
+    OPENAI_API_KEY_ENV,
     OPENAI_API_KEY_ENV_NAMES,
     OPENAI_API_URL_ENV_NAMES,
     PROCESSING_REPLAY_COMMAND_KEY,
@@ -63,6 +78,13 @@ from meetdown.constants import (
 from meetdown import text as ui_text
 from meetdown.json_types import JsonObject, require_json_object
 from meetdown.markdown import render_markdown, write_markdown
+from meetdown.notion import (
+    NotionUploadConfig,
+    NotionUploadError,
+    notionit_available,
+    resolve_notion_upload_config,
+    upload_markdown_to_notion,
+)
 from meetdown.providers import (
     CLOVA_MODEL_DESCRIPTION,
     GEMINI_DEFAULT_MODEL,
@@ -83,7 +105,92 @@ _DEFAULT_SECTION_STYLES = {
     ui_text.DEFAULTS_MEDIA_SECTION: ANSI_YELLOW,
     ui_text.DEFAULTS_MODELS_SECTION: ANSI_MAGENTA,
     ui_text.DEFAULTS_CREDENTIALS_SECTION: ANSI_BLUE,
+    ui_text.DEFAULTS_NOTION_SECTION: ANSI_MAGENTA,
 }
+_RICH_SECTION_STYLES = {
+    ui_text.DEFAULTS_RUNTIME_SECTION: "cyan",
+    ui_text.DEFAULTS_OUTPUT_SECTION: "green",
+    ui_text.DEFAULTS_MEDIA_SECTION: "yellow",
+    ui_text.DEFAULTS_MODELS_SECTION: "magenta",
+    ui_text.DEFAULTS_CREDENTIALS_SECTION: "blue",
+    ui_text.DEFAULTS_NOTION_SECTION: "magenta",
+}
+
+PROVIDER_PANEL = "Provider"
+OUTPUT_PANEL = "Output"
+MEDIA_PANEL = "Media"
+RECOGNITION_PANEL = "Recognition"
+NOTION_PANEL = "Notion"
+ADVANCED_PANEL = "Advanced"
+ROOT_COMMANDS = frozenset({"defaults", "quickstart", "transcribe"})
+ROOT_OPTIONS = frozenset({"--help", "-h", "--version"})
+
+
+class ProviderChoice(str, Enum):
+    clova = PROVIDER_CLOVA
+    openai = PROVIDER_OPENAI
+    gemini = PROVIDER_GEMINI
+
+
+class CompressionChoice(str, Enum):
+    smallest = "smallest"
+    lossless = "lossless"
+    none = "none"
+
+
+class ChunkFormatChoice(str, Enum):
+    flac = "flac"
+    mp3 = "mp3"
+    wav = "wav"
+
+
+class DuplicateStrategyChoice(str, Enum):
+    ask = "ask"
+    timestamp = "timestamp"
+    counter = "counter"
+    create_anyway = "create_anyway"
+    skip = "skip"
+
+
+@dataclass(frozen=True)
+class CliOptions:
+    audio_path: str | None = None
+    provider: str | None = None
+    api_key: str | None = None
+    api_url: str | None = None
+    model: str | None = None
+    output: str | None = None
+    title: str | None = None
+    from_json: str | None = None
+    save_json: str | None = None
+    chunk_duration: str | None = None
+    chunk_format: str | None = None
+    compress: str = DEFAULT_COMPRESS
+    start: str | None = None
+    end: str | None = None
+    language: str = DEFAULT_LANGUAGE
+    word_alignment: bool = DEFAULT_WORD_ALIGNMENT
+    no_diarization: bool = not DEFAULT_DIARIZATION
+    timeout: float = DEFAULT_TIMEOUT_SECONDS
+    notion: bool = False
+    notion_parent_page_id: str | None = None
+    notion_title: str | None = None
+    notion_duplicate_strategy: NotionDuplicateStrategy = (
+        DEFAULT_NOTION_DUPLICATE_STRATEGY
+    )
+    legacy_invoke_url: str | None = None
+    legacy_secret_key: str | None = None
+
+
+@dataclass(frozen=True)
+class DefaultsSection:
+    title: str
+    rows: tuple[tuple[str, object], ...]
+    style: str
+
+
+def default_cli_options() -> CliOptions:
+    return CliOptions()
 
 
 def should_use_color(stream: TextIO | None = None) -> bool:
@@ -110,119 +217,64 @@ def _styled(text: str, enabled: bool, *styles: str) -> str:
     return f"{''.join(styles)}{text}{ANSI_RESET}"
 
 
-def build_parser(*, color: bool | None = None) -> argparse.ArgumentParser:
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"{APP_NAME} {__version__}")
+        raise typer.Exit()
+
+
+def _enum_value(value: Enum | str | None) -> str | None:
+    if isinstance(value, Enum):
+        return str(value.value)
+    return value
+
+
+def _duplicate_strategy_value(
+    value: DuplicateStrategyChoice,
+) -> NotionDuplicateStrategy:
+    raw = value.value
+    if raw in NOTION_DUPLICATE_STRATEGIES:
+        return raw
+    raise ValueError(ui_text.notion_duplicate_strategy_unsupported(raw))
+
+
+def root_callback(
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            callback=_version_callback,
+            help=ui_text.ARG_VERSION_HELP,
+            is_eager=True,
+        ),
+    ] = False,
+) -> None:
+    del version
+
+
+def build_app(*, color: bool | None = None) -> typer.Typer:
     use_color = should_use_color() if color is None else color
-    parser = argparse.ArgumentParser(
-        prog=APP_NAME,
-        description=ui_text.HELP_DESCRIPTION,
-        epilog=ui_text.help_epilog(),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+    app = typer.Typer(
+        name=APP_NAME,
+        help=ui_text.HELP_DESCRIPTION,
+        add_completion=False,
+        context_settings={
+            "color": use_color,
+            "help_option_names": ["--help", "-h"],
+        },
+        no_args_is_help=True,
+        rich_markup_mode="rich",
+        pretty_exceptions_show_locals=False,
     )
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=f"%(prog)s {__version__}",
-    )
-    parser.add_argument(
-        "audio_path",
-        nargs="?",
-        metavar="audio_path",
-        help=ui_text.ARG_AUDIO_PATH_HELP,
-    )
-
-    provider = parser.add_argument_group(ui_text.ARG_PROVIDER_GROUP)
-    provider.add_argument(
-        "--provider",
-        choices=SUPPORTED_PROVIDERS,
-        help=ui_text.ARG_PROVIDER_HELP,
-    )
-    provider.add_argument(
-        "--api-key",
-        help=ui_text.ARG_API_KEY_HELP,
-    )
-    provider.add_argument(
-        "--api-url",
-        help=ui_text.ARG_API_URL_HELP,
-    )
-    provider.add_argument(
-        "--model",
-        help=ui_text.ARG_MODEL_HELP,
-    )
-
-    output = parser.add_argument_group(ui_text.ARG_OUTPUT_GROUP)
-    output.add_argument("-o", "--output", help=ui_text.ARG_OUTPUT_HELP)
-    output.add_argument("--title", help=ui_text.ARG_TITLE_HELP)
-    output.add_argument(
-        "--from-json",
-        help=ui_text.ARG_FROM_JSON_HELP,
-    )
-    output.add_argument(
-        "--save-json",
-        help=ui_text.ARG_SAVE_JSON_HELP,
-    )
-
-    media = parser.add_argument_group(ui_text.ARG_MEDIA_GROUP)
-    media.add_argument(
-        "--chunk-duration",
-        help=ui_text.ARG_CHUNK_DURATION_HELP,
-    )
-    media.add_argument(
-        "--chunk-format",
-        choices=CHUNK_FORMAT_CHOICES,
-        help=ui_text.ARG_CHUNK_FORMAT_HELP,
-    )
-    media.add_argument(
-        "--compress",
-        default=DEFAULT_COMPRESS,
-        choices=COMPRESSION_PRESETS,
-        help=ui_text.ARG_COMPRESS_HELP,
-    )
-    media.add_argument(
-        "--start",
-        help=ui_text.ARG_START_HELP,
-    )
-    media.add_argument(
-        "--end",
-        help=ui_text.ARG_END_HELP,
-    )
-
-    parser.add_argument(
-        "--invoke-url",
-        dest="legacy_invoke_url",
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument(
-        "--secret-key",
-        dest="legacy_secret_key",
-        help=argparse.SUPPRESS,
-    )
-
-    recognition = parser.add_argument_group(ui_text.ARG_RECOGNITION_GROUP)
-    recognition.add_argument(
-        "--language", default=DEFAULT_LANGUAGE, help=ui_text.ARG_LANGUAGE_HELP
-    )
-    recognition.add_argument(
-        "--word-alignment",
-        action="store_true",
-        default=DEFAULT_WORD_ALIGNMENT,
-        help=ui_text.ARG_WORD_ALIGNMENT_HELP,
-    )
-    recognition.add_argument(
-        "--no-diarization",
-        action="store_true",
-        default=not DEFAULT_DIARIZATION,
-        help=ui_text.ARG_NO_DIARIZATION_HELP,
-    )
-
-    advanced = parser.add_argument_group(ui_text.ARG_ADVANCED_GROUP)
-    advanced.add_argument(
-        "--timeout",
-        type=float,
-        default=DEFAULT_TIMEOUT_SECONDS,
-        help=ui_text.ARG_TIMEOUT_HELP,
-    )
-    parser.epilog = build_help_epilog(parser.parse_args([]), color=use_color)
-    return parser
+    app.callback()(root_callback)
+    app.command(
+        "transcribe",
+        help=ui_text.TRANSCRIBE_COMMAND_HELP,
+        epilog=ui_text.HELP_EPILOG_SHORT,
+    )(cli_command)
+    app.command("quickstart", help=ui_text.QUICKSTART_COMMAND_HELP)(quickstart_command)
+    app.command("defaults", help=ui_text.DEFAULTS_COMMAND_HELP)(defaults_command)
+    return app
 
 
 def choose_upload_format(compress: str, chunk_format: str | None) -> str:
@@ -300,7 +352,7 @@ def _env_status(*names: str) -> str:
     return ui_text.OPTION_NOT_CONFIGURED
 
 
-def _current_provider_inference(args: argparse.Namespace) -> str:
+def _current_provider_inference(args: CliOptions) -> str:
     if args.provider:
         return str(args.provider)
     try:
@@ -316,12 +368,17 @@ def _current_provider_inference(args: argparse.Namespace) -> str:
 
 def _default_value_style(value: object) -> str:
     text = str(value)
-    if text == ui_text.OPTION_TRUE or text.startswith(ui_text.PROCESSING_CONFIGURED):
+    if (
+        text == ui_text.OPTION_TRUE
+        or text == ui_text.OPTION_AVAILABLE
+        or text.startswith(ui_text.PROCESSING_CONFIGURED)
+    ):
         return ANSI_GREEN
     if (
         text == ui_text.DEFAULTS_NOT_INFERRED
         or text == ui_text.OPTION_NOT_CONFIGURED
         or text == ui_text.OPTION_NOT_SET
+        or text == ui_text.OPTION_NOT_INSTALLED
     ):
         return ANSI_YELLOW
     if text == ui_text.OPTION_FALSE:
@@ -359,15 +416,21 @@ def _default_section(
     ]
 
 
-def build_defaults_report(args: argparse.Namespace, *, color: bool = False) -> str:
+def _notion_library_status() -> str:
+    return (
+        ui_text.OPTION_AVAILABLE
+        if notionit_available()
+        else ui_text.OPTION_NOT_INSTALLED
+    )
+
+
+def _default_sections(args: CliOptions) -> list[DefaultsSection]:
     upload_format = choose_upload_format(args.compress, args.chunk_format)
     diarization = not bool(args.no_diarization)
-    lines = [
-        _styled(ui_text.DEFAULTS_TITLE, color, ANSI_BOLD),
-        "",
-        *_default_section(
+    return [
+        DefaultsSection(
             ui_text.DEFAULTS_RUNTIME_SECTION,
-            [
+            (
                 (
                     ui_text.DEFAULTS_PROVIDER_LABEL,
                     args.provider or ui_text.DEFAULTS_PROVIDER_AUTO,
@@ -391,13 +454,12 @@ def build_defaults_report(args: argparse.Namespace, *, color: bool = False) -> s
                     ui_text.DEFAULTS_TIMEOUT_SECONDS_LABEL,
                     _format_seconds(float(args.timeout)),
                 ),
-            ],
-            color=color,
+            ),
+            _DEFAULT_SECTION_STYLES[ui_text.DEFAULTS_RUNTIME_SECTION],
         ),
-        "",
-        *_default_section(
+        DefaultsSection(
             ui_text.DEFAULTS_OUTPUT_SECTION,
-            [
+            (
                 (
                     ui_text.DEFAULTS_OUTPUT_LABEL,
                     args.output or ui_text.DEFAULTS_OUTPUT_PATH,
@@ -406,13 +468,12 @@ def build_defaults_report(args: argparse.Namespace, *, color: bool = False) -> s
                     ui_text.DEFAULTS_TITLE_LABEL,
                     args.title or ui_text.DEFAULTS_TITLE_VALUE,
                 ),
-            ],
-            color=color,
+            ),
+            _DEFAULT_SECTION_STYLES[ui_text.DEFAULTS_OUTPUT_SECTION],
         ),
-        "",
-        *_default_section(
+        DefaultsSection(
             ui_text.DEFAULTS_MEDIA_SECTION,
-            [
+            (
                 (ui_text.DEFAULTS_COMPRESS_LABEL, args.compress),
                 (
                     ui_text.DEFAULTS_CHUNK_FORMAT_LABEL,
@@ -431,13 +492,12 @@ def build_defaults_report(args: argparse.Namespace, *, color: bool = False) -> s
                     ui_text.DEFAULTS_END_LABEL,
                     args.end or ui_text.PROCESSING_END_OF_FILE,
                 ),
-            ],
-            color=color,
+            ),
+            _DEFAULT_SECTION_STYLES[ui_text.DEFAULTS_MEDIA_SECTION],
         ),
-        "",
-        *_default_section(
+        DefaultsSection(
             ui_text.DEFAULTS_MODELS_SECTION,
-            [
+            (
                 (PROVIDER_CLOVA, CLOVA_MODEL_DESCRIPTION),
                 (PROVIDER_OPENAI, OPENAI_DEFAULT_MODEL),
                 (
@@ -448,13 +508,12 @@ def build_defaults_report(args: argparse.Namespace, *, color: bool = False) -> s
                     OPENAI_DEFAULT_NO_DIARIZATION_MODEL,
                 ),
                 (PROVIDER_GEMINI, GEMINI_DEFAULT_MODEL),
-            ],
-            color=color,
+            ),
+            _DEFAULT_SECTION_STYLES[ui_text.DEFAULTS_MODELS_SECTION],
         ),
-        "",
-        *_default_section(
+        DefaultsSection(
             ui_text.DEFAULTS_CREDENTIALS_SECTION,
-            [
+            (
                 (
                     ui_text.defaults_provider_setting(
                         PROVIDER_CLOVA, ui_text.DEFAULTS_API_URL_LABEL
@@ -491,17 +550,240 @@ def build_defaults_report(args: argparse.Namespace, *, color: bool = False) -> s
                     ),
                     _env_status(*GEMINI_API_KEY_ENV_NAMES),
                 ),
-            ],
-            color=color,
+            ),
+            _DEFAULT_SECTION_STYLES[ui_text.DEFAULTS_CREDENTIALS_SECTION],
+        ),
+        DefaultsSection(
+            ui_text.DEFAULTS_NOTION_SECTION,
+            (
+                (
+                    ui_text.DEFAULTS_NOTION_UPLOAD_LABEL,
+                    ui_text.OPTION_TRUE if args.notion else ui_text.OPTION_FALSE,
+                ),
+                (
+                    ui_text.DEFAULTS_NOTION_LIBRARY_LABEL,
+                    _notion_library_status(),
+                ),
+                (
+                    ui_text.DEFAULTS_NOTION_TOKEN_LABEL,
+                    _env_status(NOTION_TOKEN_ENV),
+                ),
+                (
+                    ui_text.DEFAULTS_NOTION_PARENT_PAGE_LABEL,
+                    (
+                        ui_text.PROCESSING_CONFIGURED
+                        if args.notion_parent_page_id
+                        else _env_status(NOTION_PARENT_PAGE_ID_ENV)
+                    ),
+                ),
+                (
+                    ui_text.DEFAULTS_NOTION_TITLE_LABEL,
+                    args.notion_title or ui_text.DEFAULTS_NOTION_TITLE_VALUE,
+                ),
+                (
+                    ui_text.DEFAULTS_NOTION_DUPLICATE_STRATEGY_LABEL,
+                    args.notion_duplicate_strategy,
+                ),
+            ),
+            _DEFAULT_SECTION_STYLES[ui_text.DEFAULTS_NOTION_SECTION],
         ),
     ]
+
+
+def build_defaults_report(args: CliOptions, *, color: bool = False) -> str:
+    lines = [
+        _styled(ui_text.DEFAULTS_TITLE, color, ANSI_BOLD),
+    ]
+    for section in _default_sections(args):
+        lines.extend(
+            [
+                "",
+                *_default_section(
+                    section.title,
+                    list(section.rows),
+                    color=color,
+                ),
+            ]
+        )
     return "\n".join(lines) + "\n"
 
 
-def build_help_epilog(default_args: argparse.Namespace, *, color: bool = False) -> str:
-    return (
-        f"{ui_text.help_epilog()}\n{build_defaults_report(default_args, color=color)}"
+def _rich_console(*, color: bool | None = None) -> Console:
+    use_color = should_use_color() if color is None else color
+    return Console(
+        force_terminal=use_color,
+        no_color=not use_color,
+        highlight=False,
+        soft_wrap=False,
     )
+
+
+def _rich_value_style(value: object) -> str:
+    text = str(value)
+    if (
+        text == ui_text.OPTION_TRUE
+        or text == ui_text.OPTION_AVAILABLE
+        or text.startswith(ui_text.PROCESSING_CONFIGURED)
+    ):
+        return "green"
+    if (
+        text == ui_text.DEFAULTS_NOT_INFERRED
+        or text == ui_text.OPTION_NOT_CONFIGURED
+        or text == ui_text.OPTION_NOT_SET
+        or text == ui_text.OPTION_NOT_INSTALLED
+    ):
+        return "yellow"
+    if text == ui_text.OPTION_FALSE:
+        return "dim"
+    return ""
+
+
+def _default_section_panel(section: DefaultsSection) -> Panel:
+    table = Table.grid(padding=(0, 2))
+    table.add_column(no_wrap=True)
+    table.add_column(ratio=1)
+    rich_style = _RICH_SECTION_STYLES[section.title]
+    for label, value in section.rows:
+        table.add_row(
+            Text(label, style=f"bold {rich_style}"),
+            Text(str(value), style=_rich_value_style(value)),
+        )
+    return Panel(
+        table,
+        title=Text(section.title, style=f"bold {rich_style}"),
+        border_style=rich_style,
+        box=box.ROUNDED,
+        padding=(1, 2),
+    )
+
+
+def build_defaults_renderable(args: CliOptions) -> Group:
+    return Group(
+        Panel(
+            ui_text.DEFAULTS_SUMMARY,
+            title=Text(ui_text.DEFAULTS_TITLE, style="bold cyan"),
+            border_style="cyan",
+            box=box.ROUNDED,
+            padding=(1, 2),
+        ),
+        *[_default_section_panel(section) for section in _default_sections(args)],
+    )
+
+
+def build_quickstart_renderable() -> Group:
+    def command(text: str) -> Text:
+        return Text(text, style="green")
+
+    provider_table = Table(
+        title="Provider recipes",
+        box=box.ROUNDED,
+        border_style="cyan",
+        header_style="bold cyan",
+        show_lines=False,
+    )
+    provider_table.add_column("Provider", style="bold", no_wrap=True)
+    provider_table.add_column("Use when", style="white")
+    provider_table.add_column("Command")
+    provider_table.add_row(
+        "CLOVA",
+        "you have a CLOVA Speech Invoke URL and Secret Key",
+        command(
+            f"uvx {APP_NAME} meeting.m4a -o meeting.md "
+            '--api-url "<CLOVA Invoke URL>" --api-key "<CLOVA Secret Key>"'
+        ),
+    )
+    provider_table.add_row(
+        "OpenAI",
+        f"{OPENAI_API_KEY_ENV} is set",
+        command(f"uvx {APP_NAME} meeting.m4a -o meeting.md"),
+    )
+    provider_table.add_row(
+        "Gemini",
+        f"{GEMINI_API_KEY_ENV} or {GOOGLE_API_KEY_ENV} is set",
+        command(f"uvx {APP_NAME} meeting.m4a -o meeting.md --chunk-duration 10m"),
+    )
+    provider_table.add_row(
+        "Notion",
+        "you want the saved Markdown uploaded after transcription",
+        command(
+            f'uvx --from "{APP_NAME}[notion]" {APP_NAME} '
+            "meeting.m4a -o meeting.md --notion"
+        ),
+    )
+
+    workflow_table = Table(
+        title="Common workflows",
+        box=box.ROUNDED,
+        border_style="magenta",
+        header_style="bold magenta",
+    )
+    workflow_table.add_column("Goal", style="bold", no_wrap=True)
+    workflow_table.add_column("Command")
+    workflow_table.add_row(
+        "Long recording",
+        command(
+            f"uvx {APP_NAME} meeting.m4a -o meeting.md "
+            '--api-url "<CLOVA Invoke URL>" --api-key "<CLOVA Secret Key>" '
+            "--chunk-duration 10m"
+        ),
+    )
+    workflow_table.add_row(
+        "Selected range",
+        command(
+            f"uvx {APP_NAME} meeting.mp4 -o section.md "
+            '--api-url "<CLOVA Invoke URL>" --api-key "<CLOVA Secret Key>" '
+            "--start 00:10:00 --end 00:45:00"
+        ),
+    )
+    workflow_table.add_row(
+        "Save JSON",
+        command(
+            f"uvx {APP_NAME} meeting.m4a -o meeting.md "
+            '--api-url "<CLOVA Invoke URL>" --api-key "<CLOVA Secret Key>" '
+            "--save-json meeting.json"
+        ),
+    )
+    workflow_table.add_row(
+        "From JSON",
+        command(f"uvx {APP_NAME} --from-json meeting.json -o meeting.md"),
+    )
+
+    notes = Table.grid(padding=(0, 1))
+    notes.add_column(style="bold yellow", no_wrap=True)
+    notes.add_column()
+    notes.add_row(
+        "Provider",
+        "Omit --provider when exactly one provider-specific API key is configured.",
+    )
+    notes.add_row(
+        "CLOVA URL",
+        "/recognizer/upload is optional in --api-url.",
+    )
+    notes.add_row(
+        "More",
+        f"Run {APP_NAME} defaults for current settings or {APP_NAME} transcribe --help for every option.",
+    )
+
+    return Group(
+        Panel(
+            ui_text.QUICKSTART_SUMMARY,
+            title=Text(ui_text.QUICKSTART_TITLE, style="bold cyan"),
+            border_style="cyan",
+            box=box.ROUNDED,
+            padding=(1, 2),
+        ),
+        provider_table,
+        workflow_table,
+        Panel(notes, title="Notes", border_style="yellow", box=box.ROUNDED),
+    )
+
+
+def print_defaults(*, color: bool | None = None) -> None:
+    _rich_console(color=color).print(build_defaults_renderable(default_cli_options()))
+
+
+def print_quickstart(*, color: bool | None = None) -> None:
+    _rich_console(color=color).print(build_quickstart_renderable())
 
 
 def _api_key_placeholder(provider: str) -> str:
@@ -513,7 +795,7 @@ def _api_key_placeholder(provider: str) -> str:
 
 def build_replay_command(
     *,
-    args: argparse.Namespace,
+    args: CliOptions,
     provider_config: ProviderConfig,
     output_path: Path,
 ) -> str:
@@ -557,7 +839,7 @@ def build_replay_command(
 
 def build_processing_options(
     *,
-    args: argparse.Namespace,
+    args: CliOptions,
     provider_config: ProviderConfig,
     upload_format: str,
     preprocessing: str,
@@ -596,17 +878,21 @@ def build_processing_options(
     }
 
 
-def run(argv: Sequence[str] | None = None) -> int:
-    effective_argv = list(sys.argv[1:] if argv is None else argv)
-    parser = build_parser()
-    args = parser.parse_args(effective_argv)
+def _echo(message: str, *, err: bool = False) -> None:
+    typer.echo(message, err=err)
 
-    if not effective_argv:
-        parser.print_help()
-        return 0
 
+def execute_options(args: CliOptions) -> int:
     output_path = infer_output_path(args.audio_path, args.from_json, args.output)
     title = infer_title(args.audio_path, args.from_json, args.title)
+
+    notion_config: NotionUploadConfig | None = None
+    if args.notion:
+        notion_config = resolve_notion_upload_config(
+            parent_page_id=args.notion_parent_page_id,
+            page_title=args.notion_title or title,
+            duplicate_strategy=args.notion_duplicate_strategy,
+        )
 
     if args.from_json:
         response_path = Path(args.from_json)
@@ -617,112 +903,107 @@ def run(argv: Sequence[str] | None = None) -> int:
         source_path = args.audio_path
     else:
         if not args.audio_path:
-            parser.error(ui_text.AUDIO_PATH_REQUIRED)
+            raise ValueError(ui_text.AUDIO_PATH_REQUIRED)
 
-        try:
-            audio_path = Path(args.audio_path)
-            if not audio_path.is_file():
-                raise FileNotFoundError(ui_text.audio_file_not_found(audio_path))
+        audio_path = Path(args.audio_path)
+        if not audio_path.is_file():
+            raise FileNotFoundError(ui_text.audio_file_not_found(audio_path))
 
-            provider_config = resolve_provider_config(
-                provider=args.provider,
-                language=str(args.language),
-                timeout_seconds=float(args.timeout),
-                word_alignment=bool(args.word_alignment),
-                diarization=not bool(args.no_diarization),
-                api_url=args.api_url,
-                api_key=args.api_key,
-                model=args.model,
-                clova_invoke_url=args.legacy_invoke_url,
-                clova_secret_key=args.legacy_secret_key,
-            )
-            start_seconds = parse_time_seconds(args.start) if args.start else 0
-            end_seconds = parse_time_seconds(args.end) if args.end else None
-            validate_time_range(start_seconds, end_seconds)
-            upload_format = choose_upload_format(args.compress, args.chunk_format)
-            preprocessing = ui_text.PREPROCESSING_SOURCE_FILE
-            saved_upload_format = ui_text.PREPROCESSING_SOURCE_FILE
-            chunk_count: int | None = None
+        provider_config = resolve_provider_config(
+            provider=args.provider,
+            language=str(args.language),
+            timeout_seconds=float(args.timeout),
+            word_alignment=bool(args.word_alignment),
+            diarization=not bool(args.no_diarization),
+            api_url=args.api_url,
+            api_key=args.api_key,
+            model=args.model,
+            clova_invoke_url=args.legacy_invoke_url,
+            clova_secret_key=args.legacy_secret_key,
+        )
+        start_seconds = parse_time_seconds(args.start) if args.start else 0
+        end_seconds = parse_time_seconds(args.end) if args.end else None
+        validate_time_range(start_seconds, end_seconds)
+        upload_format = choose_upload_format(args.compress, args.chunk_format)
+        preprocessing = ui_text.PREPROCESSING_SOURCE_FILE
+        saved_upload_format = ui_text.PREPROCESSING_SOURCE_FILE
+        chunk_count: int | None = None
 
-            if args.chunk_duration:
-                chunk_seconds = parse_duration_seconds(args.chunk_duration)
-                with tempfile.TemporaryDirectory(prefix=TEMP_DIR_PREFIX) as chunk_dir:
-                    chunks = split_media(
-                        args.audio_path,
-                        chunk_dir,
-                        chunk_seconds,
-                        chunk_format=upload_format,
-                        start_seconds=start_seconds,
-                        end_seconds=end_seconds,
-                    )
-                    chunk_count = len(chunks)
-                    preprocessing = ui_text.PREPROCESSING_CHUNKED
-                    saved_upload_format = upload_format
-                    responses: list[JsonObject] = []
-                    for index, chunk in enumerate(chunks, start=1):
-                        size_kib = chunk.path.stat().st_size / 1024
-                        print(
-                            ui_text.transcribing_chunk(
-                                index, len(chunks), chunk.path.name, size_kib
-                            )
-                        )
-                        chunk_response = transcribe_with_provider(
-                            chunk.path, provider_config
-                        )
-                        responses.append(
-                            offset_response_times(chunk_response, chunk.offset_ms)
-                        )
-                    response = merge_responses(responses)
-            elif args.start or args.end:
-                with tempfile.TemporaryDirectory(prefix=TEMP_DIR_PREFIX) as chunk_dir:
-                    clip_path = (
-                        Path(chunk_dir) / f"selected{chunk_extension(upload_format)}"
-                    )
-                    clip = extract_media(
-                        args.audio_path,
-                        clip_path,
-                        start_seconds=start_seconds,
-                        end_seconds=end_seconds,
-                        chunk_format=upload_format,
-                    )
-                    chunk_count = 1
-                    preprocessing = ui_text.PREPROCESSING_SELECTED_RANGE
-                    saved_upload_format = upload_format
-                    size_kib = clip.path.stat().st_size / 1024
-                    print(ui_text.transcribing_selected_range(clip.path.name, size_kib))
-                    clip_response = transcribe_with_provider(clip.path, provider_config)
-                    response = offset_response_times(clip_response, clip.offset_ms)
-            elif should_prepare_whole_file_upload(args.compress, args.chunk_format):
-                with tempfile.TemporaryDirectory(prefix=TEMP_DIR_PREFIX) as chunk_dir:
-                    upload_path = (
-                        Path(chunk_dir) / f"upload{chunk_extension(upload_format)}"
-                    )
-                    upload = extract_media(
-                        args.audio_path,
-                        upload_path,
-                        chunk_format=upload_format,
-                    )
-                    preprocessing = ui_text.PREPROCESSING_COMPRESSED_UPLOAD
-                    saved_upload_format = upload_format
-                    size_kib = upload.path.stat().st_size / 1024
-                    print(
-                        ui_text.transcribing_compressed_upload(
-                            upload.path.name, size_kib
+        if args.chunk_duration:
+            chunk_seconds = parse_duration_seconds(args.chunk_duration)
+            with tempfile.TemporaryDirectory(prefix=TEMP_DIR_PREFIX) as chunk_dir:
+                chunks = split_media(
+                    args.audio_path,
+                    chunk_dir,
+                    chunk_seconds,
+                    chunk_format=upload_format,
+                    start_seconds=start_seconds,
+                    end_seconds=end_seconds,
+                )
+                chunk_count = len(chunks)
+                preprocessing = ui_text.PREPROCESSING_CHUNKED
+                saved_upload_format = upload_format
+                responses: list[JsonObject] = []
+                for index, chunk in enumerate(chunks, start=1):
+                    size_kib = chunk.path.stat().st_size / 1024
+                    _echo(
+                        ui_text.transcribing_chunk(
+                            index, len(chunks), chunk.path.name, size_kib
                         )
                     )
-                    response = transcribe_with_provider(upload.path, provider_config)
-            else:
-                response = transcribe_with_provider(args.audio_path, provider_config)
-            response["meetdown"] = build_processing_options(
-                args=args,
-                provider_config=provider_config,
-                upload_format=saved_upload_format,
-                preprocessing=preprocessing,
-                chunk_count=chunk_count,
-                output_path=output_path,
-            )
-        except (ChunkingError, ProviderError, FileNotFoundError, ValueError) as exc:
-            parser.exit(1, f"meetdown: {exc}\n")
+                    chunk_response = transcribe_with_provider(
+                        chunk.path, provider_config
+                    )
+                    responses.append(
+                        offset_response_times(chunk_response, chunk.offset_ms)
+                    )
+                response = merge_responses(responses)
+        elif args.start or args.end:
+            with tempfile.TemporaryDirectory(prefix=TEMP_DIR_PREFIX) as chunk_dir:
+                clip_path = (
+                    Path(chunk_dir) / f"selected{chunk_extension(upload_format)}"
+                )
+                clip = extract_media(
+                    args.audio_path,
+                    clip_path,
+                    start_seconds=start_seconds,
+                    end_seconds=end_seconds,
+                    chunk_format=upload_format,
+                )
+                chunk_count = 1
+                preprocessing = ui_text.PREPROCESSING_SELECTED_RANGE
+                saved_upload_format = upload_format
+                size_kib = clip.path.stat().st_size / 1024
+                _echo(ui_text.transcribing_selected_range(clip.path.name, size_kib))
+                clip_response = transcribe_with_provider(clip.path, provider_config)
+                response = offset_response_times(clip_response, clip.offset_ms)
+        elif should_prepare_whole_file_upload(args.compress, args.chunk_format):
+            with tempfile.TemporaryDirectory(prefix=TEMP_DIR_PREFIX) as chunk_dir:
+                upload_path = (
+                    Path(chunk_dir) / f"upload{chunk_extension(upload_format)}"
+                )
+                upload = extract_media(
+                    args.audio_path,
+                    upload_path,
+                    chunk_format=upload_format,
+                )
+                preprocessing = ui_text.PREPROCESSING_COMPRESSED_UPLOAD
+                saved_upload_format = upload_format
+                size_kib = upload.path.stat().st_size / 1024
+                _echo(
+                    ui_text.transcribing_compressed_upload(upload.path.name, size_kib)
+                )
+                response = transcribe_with_provider(upload.path, provider_config)
+        else:
+            response = transcribe_with_provider(args.audio_path, provider_config)
+        response["meetdown"] = build_processing_options(
+            args=args,
+            provider_config=provider_config,
+            upload_format=saved_upload_format,
+            preprocessing=preprocessing,
+            chunk_count=chunk_count,
+            output_path=output_path,
+        )
 
         if args.save_json:
             save_path = Path(args.save_json)
@@ -741,7 +1022,310 @@ def run(argv: Sequence[str] | None = None) -> int:
         language=args.language,
     )
     written_path = write_markdown(output_path, markdown)
-    print(ui_text.wrote_file(written_path))
+    _echo(ui_text.wrote_file(written_path))
+
+    if notion_config is not None:
+        upload_markdown_to_notion(written_path, notion_config)
+        _echo(ui_text.notion_upload_completed())
+
+    return 0
+
+
+def _cli_options_from_values(
+    *,
+    audio_path: str | None,
+    provider: ProviderChoice | None,
+    api_key: str | None,
+    api_url: str | None,
+    model: str | None,
+    output: str | None,
+    title: str | None,
+    from_json: str | None,
+    save_json: str | None,
+    chunk_duration: str | None,
+    chunk_format: ChunkFormatChoice | None,
+    compress: CompressionChoice,
+    start: str | None,
+    end: str | None,
+    language: str,
+    word_alignment: bool,
+    no_diarization: bool,
+    timeout: float,
+    notion: bool,
+    notion_parent_page_id: str | None,
+    notion_title: str | None,
+    notion_duplicate_strategy: DuplicateStrategyChoice,
+    legacy_invoke_url: str | None,
+    legacy_secret_key: str | None,
+) -> CliOptions:
+    return CliOptions(
+        audio_path=audio_path,
+        provider=_enum_value(provider),
+        api_key=api_key,
+        api_url=api_url,
+        model=model,
+        output=output,
+        title=title,
+        from_json=from_json,
+        save_json=save_json,
+        chunk_duration=chunk_duration,
+        chunk_format=_enum_value(chunk_format),
+        compress=compress.value,
+        start=start,
+        end=end,
+        language=language,
+        word_alignment=word_alignment,
+        no_diarization=no_diarization,
+        timeout=timeout,
+        notion=notion,
+        notion_parent_page_id=notion_parent_page_id,
+        notion_title=notion_title,
+        notion_duplicate_strategy=_duplicate_strategy_value(notion_duplicate_strategy),
+        legacy_invoke_url=legacy_invoke_url,
+        legacy_secret_key=legacy_secret_key,
+    )
+
+
+def cli_command(
+    audio_path: Annotated[
+        str | None,
+        typer.Argument(help=ui_text.ARG_AUDIO_PATH_HELP, metavar="audio_path"),
+    ] = None,
+    provider: Annotated[
+        ProviderChoice | None,
+        typer.Option(
+            "--provider",
+            help=ui_text.ARG_PROVIDER_HELP,
+            rich_help_panel=PROVIDER_PANEL,
+            case_sensitive=False,
+        ),
+    ] = None,
+    api_key: Annotated[
+        str | None,
+        typer.Option(
+            "--api-key", help=ui_text.ARG_API_KEY_HELP, rich_help_panel=PROVIDER_PANEL
+        ),
+    ] = None,
+    api_url: Annotated[
+        str | None,
+        typer.Option(
+            "--api-url", help=ui_text.ARG_API_URL_HELP, rich_help_panel=PROVIDER_PANEL
+        ),
+    ] = None,
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model", help=ui_text.ARG_MODEL_HELP, rich_help_panel=PROVIDER_PANEL
+        ),
+    ] = None,
+    output: Annotated[
+        str | None,
+        typer.Option(
+            "-o", "--output", help=ui_text.ARG_OUTPUT_HELP, rich_help_panel=OUTPUT_PANEL
+        ),
+    ] = None,
+    title: Annotated[
+        str | None,
+        typer.Option(
+            "--title", help=ui_text.ARG_TITLE_HELP, rich_help_panel=OUTPUT_PANEL
+        ),
+    ] = None,
+    from_json: Annotated[
+        str | None,
+        typer.Option(
+            "--from-json", help=ui_text.ARG_FROM_JSON_HELP, rich_help_panel=OUTPUT_PANEL
+        ),
+    ] = None,
+    save_json: Annotated[
+        str | None,
+        typer.Option(
+            "--save-json", help=ui_text.ARG_SAVE_JSON_HELP, rich_help_panel=OUTPUT_PANEL
+        ),
+    ] = None,
+    chunk_duration: Annotated[
+        str | None,
+        typer.Option(
+            "--chunk-duration",
+            help=ui_text.ARG_CHUNK_DURATION_HELP,
+            rich_help_panel=MEDIA_PANEL,
+        ),
+    ] = None,
+    chunk_format: Annotated[
+        ChunkFormatChoice | None,
+        typer.Option(
+            "--chunk-format",
+            help=ui_text.ARG_CHUNK_FORMAT_HELP,
+            rich_help_panel=MEDIA_PANEL,
+            case_sensitive=False,
+        ),
+    ] = None,
+    compress: Annotated[
+        CompressionChoice,
+        typer.Option(
+            "--compress",
+            help=ui_text.ARG_COMPRESS_HELP,
+            rich_help_panel=MEDIA_PANEL,
+            case_sensitive=False,
+        ),
+    ] = CompressionChoice(DEFAULT_COMPRESS),
+    start: Annotated[
+        str | None,
+        typer.Option(
+            "--start", help=ui_text.ARG_START_HELP, rich_help_panel=MEDIA_PANEL
+        ),
+    ] = None,
+    end: Annotated[
+        str | None,
+        typer.Option("--end", help=ui_text.ARG_END_HELP, rich_help_panel=MEDIA_PANEL),
+    ] = None,
+    language: Annotated[
+        str,
+        typer.Option(
+            "--language",
+            help=ui_text.ARG_LANGUAGE_HELP,
+            rich_help_panel=RECOGNITION_PANEL,
+        ),
+    ] = DEFAULT_LANGUAGE,
+    word_alignment: Annotated[
+        bool,
+        typer.Option(
+            "--word-alignment",
+            help=ui_text.ARG_WORD_ALIGNMENT_HELP,
+            rich_help_panel=RECOGNITION_PANEL,
+        ),
+    ] = DEFAULT_WORD_ALIGNMENT,
+    no_diarization: Annotated[
+        bool,
+        typer.Option(
+            "--no-diarization",
+            help=ui_text.ARG_NO_DIARIZATION_HELP,
+            rich_help_panel=RECOGNITION_PANEL,
+        ),
+    ] = not DEFAULT_DIARIZATION,
+    notion: Annotated[
+        bool,
+        typer.Option(
+            "--notion", help=ui_text.ARG_NOTION_HELP, rich_help_panel=NOTION_PANEL
+        ),
+    ] = False,
+    notion_parent_page_id: Annotated[
+        str | None,
+        typer.Option(
+            "--notion-parent-page-id",
+            help=ui_text.ARG_NOTION_PARENT_PAGE_ID_HELP,
+            rich_help_panel=NOTION_PANEL,
+        ),
+    ] = None,
+    notion_title: Annotated[
+        str | None,
+        typer.Option(
+            "--notion-title",
+            help=ui_text.ARG_NOTION_TITLE_HELP,
+            rich_help_panel=NOTION_PANEL,
+        ),
+    ] = None,
+    notion_duplicate_strategy: Annotated[
+        DuplicateStrategyChoice,
+        typer.Option(
+            "--notion-duplicate-strategy",
+            help=ui_text.ARG_NOTION_DUPLICATE_STRATEGY_HELP,
+            rich_help_panel=NOTION_PANEL,
+            case_sensitive=False,
+        ),
+    ] = DuplicateStrategyChoice(DEFAULT_NOTION_DUPLICATE_STRATEGY),
+    timeout: Annotated[
+        float,
+        typer.Option(
+            "--timeout", help=ui_text.ARG_TIMEOUT_HELP, rich_help_panel=ADVANCED_PANEL
+        ),
+    ] = DEFAULT_TIMEOUT_SECONDS,
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            callback=_version_callback,
+            help=ui_text.ARG_VERSION_HELP,
+            is_eager=True,
+            rich_help_panel=ADVANCED_PANEL,
+        ),
+    ] = False,
+    legacy_invoke_url: Annotated[
+        str | None, typer.Option("--invoke-url", hidden=True)
+    ] = None,
+    legacy_secret_key: Annotated[
+        str | None, typer.Option("--secret-key", hidden=True)
+    ] = None,
+) -> None:
+    del version
+    args = _cli_options_from_values(
+        audio_path=audio_path,
+        provider=provider,
+        api_key=api_key,
+        api_url=api_url,
+        model=model,
+        output=output,
+        title=title,
+        from_json=from_json,
+        save_json=save_json,
+        chunk_duration=chunk_duration,
+        chunk_format=chunk_format,
+        compress=compress,
+        start=start,
+        end=end,
+        language=language,
+        word_alignment=word_alignment,
+        no_diarization=no_diarization,
+        timeout=timeout,
+        notion=notion,
+        notion_parent_page_id=notion_parent_page_id,
+        notion_title=notion_title,
+        notion_duplicate_strategy=notion_duplicate_strategy,
+        legacy_invoke_url=legacy_invoke_url,
+        legacy_secret_key=legacy_secret_key,
+    )
+    try:
+        execute_options(args)
+    except (
+        ChunkingError,
+        FileNotFoundError,
+        NotionUploadError,
+        ProviderError,
+        ValueError,
+    ) as exc:
+        _echo(f"{APP_NAME}: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+
+def quickstart_command() -> None:
+    print_quickstart()
+
+
+def defaults_command() -> None:
+    print_defaults()
+
+
+def _route_args(argv: list[str]) -> list[str]:
+    if not argv:
+        return ["--help"]
+    first = argv[0]
+    if first in ROOT_COMMANDS or first in ROOT_OPTIONS:
+        return argv
+    return ["transcribe", *argv]
+
+
+def run(argv: Sequence[str] | None = None) -> int:
+    effective_argv = list(sys.argv[1:] if argv is None else argv)
+    app = build_app()
+    routed_argv = _route_args(effective_argv)
+    try:
+        result = app(args=routed_argv, prog_name=APP_NAME, standalone_mode=False)
+    except click.exceptions.Exit as exc:
+        return int(exc.exit_code)
+    except click.ClickException as exc:
+        exc.show(file=sys.stderr)
+        return int(exc.exit_code)
+    if isinstance(result, int):
+        return result
     return 0
 
 

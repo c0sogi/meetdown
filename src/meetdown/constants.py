@@ -3,6 +3,9 @@ from __future__ import annotations
 from typing import Final, Literal
 
 ProviderName = Literal["clova", "openai", "gemini"]
+NotionDuplicateStrategy = Literal[
+    "ask", "timestamp", "counter", "create_anyway", "skip"
+]
 
 APP_NAME: Final = "meetdown"
 LANGUAGE_AUTO: Final = "auto"
@@ -12,6 +15,7 @@ DEFAULT_TITLE: Final = "Meeting Transcript"
 DEFAULT_TIMEOUT_SECONDS: Final = 3600.0
 DEFAULT_WORD_ALIGNMENT: Final = False
 DEFAULT_DIARIZATION: Final = True
+DEFAULT_NOTION_DUPLICATE_STRATEGY: Final[NotionDuplicateStrategy] = "timestamp"
 TEMP_DIR_PREFIX: Final = "meetdown-"
 
 PROVIDER_CLOVA: Final[ProviderName] = "clova"
@@ -48,6 +52,8 @@ GOOGLE_API_KEY_ENV: Final = "GOOGLE_API_KEY"
 GOOGLE_API_URL_ENV: Final = "GOOGLE_API_URL"
 MEETDOWN_API_KEY_ENV: Final = "MEETDOWN_API_KEY"
 MEETDOWN_API_URL_ENV: Final = "MEETDOWN_API_URL"
+NOTION_TOKEN_ENV: Final = "NOTION_TOKEN"
+NOTION_PARENT_PAGE_ID_ENV: Final = "NOTION_PARENT_PAGE_ID"
 PROVIDER_ENV_NAMES: Final[tuple[str, ...]] = (
     CLOVA_SPEECH_INVOKE_URL_ENV,
     CLOVA_SPEECH_SECRET_KEY_ENV,
@@ -113,6 +119,14 @@ CHUNK_FORMAT_FLAC: Final = "flac"
 CHUNK_FORMAT_MP3: Final = "mp3"
 CHUNK_FORMAT_WAV: Final = "wav"
 CHUNK_FORMAT_CHOICES: Final = (CHUNK_FORMAT_FLAC, CHUNK_FORMAT_MP3, CHUNK_FORMAT_WAV)
+
+NOTION_DUPLICATE_STRATEGIES: Final[tuple[NotionDuplicateStrategy, ...]] = (
+    "ask",
+    "timestamp",
+    "counter",
+    "create_anyway",
+    "skip",
+)
 
 PROVIDER_API_KEY_PLACEHOLDERS: Final[dict[ProviderName, str]] = {
     PROVIDER_CLOVA: "<CLOVA Secret Key>",

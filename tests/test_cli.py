@@ -1,17 +1,19 @@
 import json
 import re
-from argparse import Namespace
 from importlib.metadata import version
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
 from meetdown import text as ui_text
 from meetdown.cli import (
+    CliOptions,
     build_defaults_report,
-    build_parser,
+    build_app,
     build_replay_command,
     choose_upload_format,
+    default_cli_options,
     mask_secret,
     run,
     should_use_color,
@@ -32,7 +34,11 @@ from meetdown.constants import (
     NO_COLOR_ENV,
     PROVIDER_ENV_NAMES,
 )
+from meetdown.notion import NotionUploadConfig, NotionUploadError
 from meetdown.providers import ProviderConfig
+
+
+runner = CliRunner()
 
 
 def clear_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -55,7 +61,7 @@ def test_should_prepare_whole_file_upload_matches_compression_intent() -> None:
 
 
 def test_cli_parser_uses_shared_defaults() -> None:
-    args = build_parser(color=False).parse_args([])
+    args = default_cli_options()
 
     assert args.compress == DEFAULT_COMPRESS
     assert args.language == DEFAULT_LANGUAGE
@@ -74,15 +80,14 @@ def test_mask_secret_shows_only_edges() -> None:
 def test_cli_version_uses_package_metadata(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    with pytest.raises(SystemExit) as exc_info:
-        run(["--version"])
+    exit_code = run(["--version"])
 
-    assert exc_info.value.code == 0
+    assert exit_code == 0
     assert f"meetdown {version('meetdown')}" in capsys.readouterr().out
 
 
 def test_build_replay_command_is_powershell_copyable() -> None:
-    args = Namespace(
+    args = CliOptions(
         audio_path="C:\\Meetings\\weekly sync.m4a",
         title="Weekly Sync",
         compress="smallest",
@@ -115,24 +120,40 @@ def test_build_replay_command_is_powershell_copyable() -> None:
     assert "--word-alignment" in command
 
 
-def test_help_includes_quick_start_and_provider_guidance() -> None:
-    help_text = build_parser().format_help()
+def test_root_help_lists_focused_subcommands() -> None:
+    result = runner.invoke(build_app(color=False), ["--help"], prog_name="meetdown")
+    help_text = result.stdout
 
-    assert "Quick start:" in help_text
-    assert "CLOVA:" in help_text
-    assert "uvx meetdown" in help_text
+    assert result.exit_code == 0
+    assert "Usage: meetdown" in help_text
+    assert "Commands" in help_text
+    assert "transcribe" in help_text
+    assert "quickstart" in help_text
+    assert "defaults" in help_text
+    assert "Current defaults" not in help_text
+    assert "Provider recipes" not in help_text
+    assert "--notion" not in help_text
+
+
+def test_transcribe_help_includes_provider_and_notion_options() -> None:
+    result = runner.invoke(
+        build_app(color=False), ["transcribe", "--help"], prog_name="meetdown"
+    )
+    help_text = result.stdout
+    compact_help = re.sub(r"\s+", " ", help_text)
+
+    assert result.exit_code == 0
+    assert "Usage: meetdown transcribe" in help_text
     assert "--api-url" in help_text
-    assert "provider and credentials:" in help_text
-    assert "Provider models:" in help_text
-    assert "gpt-4o-transcribe-diarize" in help_text
-    assert "CLOVA Speech domain model" in help_text
-    assert "OpenAI with OPENAI_API_KEY set:" in help_text
-    assert "Current defaults" in help_text
+    assert "Provider" in help_text
+    assert "Notion" in help_text
+    assert "--notion" in help_text
+    assert "--notion-parent-page" in help_text
+    assert "meetdown quickstart" in compact_help
     assert "Defaults to ko-KR" not in help_text
     assert f"Defaults to {format(DEFAULT_TIMEOUT_SECONDS, 'g')}" not in help_text
     assert "--show-defaults" not in help_text
-    assert "exactly one provider-specific API key" in help_text
-    assert "/recognizer/upload is optional" in help_text
+    assert "/recognizer/upload is optional" in compact_help
     assert "\n    meetdown " not in help_text
     assert "$env:" not in help_text
 
@@ -166,7 +187,7 @@ def test_cli_converts_existing_json(tmp_path: Path) -> None:
     assert "Test Meeting" in output.read_text(encoding="utf-8")
 
 
-def test_bare_cli_prints_help_and_defaults_without_audio(
+def test_bare_cli_prints_clean_root_help_without_defaults(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     clear_provider_env(monkeypatch)
@@ -175,14 +196,45 @@ def test_bare_cli_prints_help_and_defaults_without_audio(
 
     assert exit_code == 0
     output = capsys.readouterr().out
-    assert "usage: meetdown" in output
+    assert "Usage: meetdown" in output
+    assert "transcribe" in output
+    assert "quickstart" in output
+    assert "defaults" in output
+    assert "Current defaults" not in output
+    assert "Provider recipes" not in output
+
+
+def test_quickstart_command_prints_focused_rich_guide(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = run(["quickstart"])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "Quickstart" in output
+    assert "Provider recipes" in output
+    assert "meetdown[notion]" in output
+    assert "Current defaults" not in output
+
+
+def test_defaults_command_prints_current_defaults(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    clear_provider_env(monkeypatch)
+
+    exit_code = run(["defaults"])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
     assert "Current defaults" in output
-    assert "Runtime:" in output
+    assert "Runtime" in output
+    assert "Notion" in output
     assert re.search(r"Provider\s+auto-detect", output)
     assert re.search(r"Detected now\s+not inferred", output)
     assert re.search(r"Language\s+auto", output)
     assert re.search(r"Compression\s+smallest", output)
     assert re.search(r"Upload format\s+mp3", output)
+    assert "Quickstart" not in output
 
 
 def test_defaults_report_shows_provider_inference_from_environment(
@@ -190,7 +242,7 @@ def test_defaults_report_shows_provider_inference_from_environment(
 ) -> None:
     clear_provider_env(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "openai-env-key")
-    args = build_parser().parse_args([])
+    args = default_cli_options()
 
     output = build_defaults_report(args)
 
@@ -199,7 +251,7 @@ def test_defaults_report_shows_provider_inference_from_environment(
 
 
 def test_defaults_report_can_be_color_coded_by_section() -> None:
-    args = build_parser(color=False).parse_args([])
+    args = default_cli_options()
 
     plain_output = build_defaults_report(args)
     color_output = build_defaults_report(args, color=True)
@@ -281,8 +333,96 @@ def test_cli_reports_missing_audio_before_credentials(
 ) -> None:
     missing = tmp_path / "missing.m4a"
 
-    with pytest.raises(SystemExit) as exc_info:
-        run([str(missing)])
+    exit_code = run([str(missing)])
 
-    assert exc_info.value.code == 1
+    assert exit_code == 1
     assert "audio file not found" in capsys.readouterr().err
+
+
+def test_cli_prefights_notion_before_audio_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    missing = tmp_path / "missing.m4a"
+    called = False
+    captured: dict[str, object] = {}
+
+    def fake_resolve_notion_upload_config(**kwargs: object) -> NotionUploadConfig:
+        nonlocal called
+        called = True
+        captured.update(kwargs)
+        raise NotionUploadError("Notion is not configured")
+
+    monkeypatch.setattr(
+        "meetdown.cli.resolve_notion_upload_config", fake_resolve_notion_upload_config
+    )
+
+    exit_code = run([str(missing), "--title", "Weekly Sync", "--notion"])
+
+    assert exit_code == 1
+    assert called
+    assert captured["page_title"] == "Weekly Sync"
+    stderr = capsys.readouterr().err
+    assert "Notion is not configured" in stderr
+    assert "audio file not found" not in stderr
+
+
+def test_cli_uploads_to_notion_after_markdown_is_written(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "response.json"
+    output = tmp_path / "meeting.md"
+    source.write_text(
+        json.dumps({"text": "Transcript", "segments": []}),
+        encoding="utf-8",
+    )
+    config = NotionUploadConfig(parent_page_id="page-id", page_title="Notion title")
+    captured: dict[str, object] = {}
+
+    def fake_resolve_notion_upload_config(**kwargs: object) -> NotionUploadConfig:
+        captured["preflight"] = kwargs
+        return config
+
+    def fake_upload_markdown_to_notion(
+        markdown_path: str | Path, notion_config: NotionUploadConfig
+    ) -> object:
+        captured["upload_path"] = markdown_path
+        captured["upload_config"] = notion_config
+        captured["markdown_exists_during_upload"] = Path(markdown_path).is_file()
+        return object()
+
+    monkeypatch.setattr(
+        "meetdown.cli.resolve_notion_upload_config", fake_resolve_notion_upload_config
+    )
+    monkeypatch.setattr(
+        "meetdown.cli.upload_markdown_to_notion", fake_upload_markdown_to_notion
+    )
+
+    exit_code = run(
+        [
+            "--from-json",
+            str(source),
+            "-o",
+            str(output),
+            "--title",
+            "Test Meeting",
+            "--notion",
+            "--notion-parent-page-id",
+            "page-id",
+            "--notion-title",
+            "Notion title",
+        ]
+    )
+
+    assert exit_code == 0
+    assert output.is_file()
+    assert captured["preflight"] == {
+        "parent_page_id": "page-id",
+        "page_title": "Notion title",
+        "duplicate_strategy": "timestamp",
+    }
+    assert captured["markdown_exists_during_upload"] is True
+    assert captured["upload_path"] == output
+    assert captured["upload_config"] == config

@@ -3,19 +3,15 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from meetdown.constants import (
-    APP_NAME,
     AUTO_DETECT_API_KEY_ENV_NAMES,
-    CLOVA_MODEL_DESCRIPTION,
     CLOVA_SPEECH_SECRET_KEY_ENV,
     CLOVA_SPEECH_INVOKE_URL_ENV,
     GEMINI_API_KEY_ENV,
-    GEMINI_DEFAULT_MODEL,
     GOOGLE_API_KEY_ENV,
-    MEETDOWN_API_KEY_ENV,
     OPENAI_API_KEY_ENV,
-    OPENAI_DEFAULT_MODEL,
-    OPENAI_DEFAULT_NO_DIARIZATION_MODEL,
     LANGUAGE_AUTO,
+    NOTION_PARENT_PAGE_ID_ENV,
+    NOTION_TOKEN_ENV,
 )
 
 HELP_DESCRIPTION = """\
@@ -66,8 +62,25 @@ ARG_RECOGNITION_GROUP = "recognition"
 ARG_LANGUAGE_HELP = "Recognition language."
 ARG_WORD_ALIGNMENT_HELP = "Request word-level alignment when the provider supports it."
 ARG_NO_DIARIZATION_HELP = "Disable speaker diarization when the provider supports it."
+ARG_NOTION_GROUP = "notion"
+ARG_NOTION_HELP = "Upload the saved Markdown file to Notion after transcription."
+ARG_NOTION_PARENT_PAGE_ID_HELP = (
+    f"Target Notion parent page ID. Uses {NOTION_PARENT_PAGE_ID_ENV} when omitted."
+)
+ARG_NOTION_TITLE_HELP = "Notion page title. Uses the Markdown title when omitted."
+ARG_NOTION_DUPLICATE_STRATEGY_HELP = "How notionit handles same-title pages."
 ARG_ADVANCED_GROUP = "advanced"
 ARG_TIMEOUT_HELP = "HTTP timeout in seconds for provider upload."
+ARG_VERSION_HELP = "Show version and exit."
+TRANSCRIBE_COMMAND_HELP = "Transcribe audio or normalized provider JSON to Markdown."
+QUICKSTART_COMMAND_HELP = "Show focused examples for common meetdown workflows."
+DEFAULTS_COMMAND_HELP = "Show current provider, media, output, and Notion defaults."
+HELP_EPILOG_SHORT = "Run 'meetdown quickstart' for examples or 'meetdown defaults' for current settings."
+QUICKSTART_TITLE = "Quickstart"
+QUICKSTART_SUMMARY = (
+    "Pick the provider row that matches your credentials, then adjust output and media "
+    "options as needed."
+)
 
 MARKDOWN_METADATA_HEADING = "## Metadata"
 MARKDOWN_SOURCE_FILE_LABEL = "Source file"
@@ -89,6 +102,8 @@ OPTION_NOT_CONFIGURED = "not configured"
 OPTION_NOT_SET = "not set"
 OPTION_TRUE = "true"
 OPTION_FALSE = "false"
+OPTION_AVAILABLE = "available"
+OPTION_NOT_INSTALLED = "not installed"
 PROCESSING_NOT_USED = "not used"
 PROCESSING_NOT_CHUNKED = "not chunked"
 PROCESSING_START_OF_FILE = "start of file"
@@ -103,55 +118,6 @@ PREPROCESSING_COMPRESSED_UPLOAD = "compressed upload"
 
 def comma_list(values: Iterable[str]) -> str:
     return ", ".join(values)
-
-
-def help_epilog() -> str:
-    return f"""\
-Quick start:
-  CLOVA:
-    uvx {APP_NAME} meeting.m4a -o meeting.md --api-url "<CLOVA Invoke URL>" --api-key "<CLOVA Secret Key>"
-
-  OpenAI with {OPENAI_API_KEY_ENV} set:
-    uvx {APP_NAME} meeting.m4a -o meeting.md
-
-  Gemini with {GEMINI_API_KEY_ENV} set:
-    uvx {APP_NAME} meeting.m4a -o meeting.md --chunk-duration 10m
-
-Common workflows:
-  Long recording:
-    uvx {APP_NAME} meeting.m4a -o meeting.md --api-url "<CLOVA Invoke URL>" --api-key "<CLOVA Secret Key>" --chunk-duration 10m
-
-  Only transcribe a section:
-    uvx {APP_NAME} meeting.mp4 -o section.md --api-url "<CLOVA Invoke URL>" --api-key "<CLOVA Secret Key>" --start 00:10:00 --end 00:45:00
-
-  Save normalized provider JSON as well as Markdown:
-    uvx {APP_NAME} meeting.m4a -o meeting.md --api-url "<CLOVA Invoke URL>" --api-key "<CLOVA Secret Key>" --save-json meeting.json
-
-  Convert a saved normalized JSON response without calling an API:
-    uvx {APP_NAME} --from-json meeting.json -o meeting.md
-
-Compression presets:
-  --compress smallest  -> MP3 64 kbps upload, usually cheapest
-  --compress lossless  -> FLAC upload, larger but lossless
-  --compress none      -> Upload the original file unless chunking/range extraction is needed
-
-Provider models:
-  clova  -> {CLOVA_MODEL_DESCRIPTION}
-  openai -> {OPENAI_DEFAULT_MODEL}
-            {OPENAI_DEFAULT_NO_DIARIZATION_MODEL} when --no-diarization is used
-  gemini -> {GEMINI_DEFAULT_MODEL}
-
-Provider credentials:
-  If --provider is omitted, exactly one provider-specific API key must be configured.
-  clova  needs --api-url and --api-key. /recognizer/upload is optional in --api-url.
-  openai needs --api-key or {OPENAI_API_KEY_ENV}.
-  gemini needs --api-key, {GEMINI_API_KEY_ENV}, or {GOOGLE_API_KEY_ENV}. Use --chunk-duration for large files.
-
-Advanced:
-  You may store keys in environment variables instead of typing --api-key every time.
-  Supported names include CLOVA_SPEECH_SECRET_KEY, {OPENAI_API_KEY_ENV}, {GEMINI_API_KEY_ENV},
-  {GOOGLE_API_KEY_ENV}, and {MEETDOWN_API_KEY_ENV}.
-"""
 
 
 def provider_must_be_supported() -> str:
@@ -245,6 +211,7 @@ DEFAULTS_OUTPUT_SECTION = "Output"
 DEFAULTS_MEDIA_SECTION = "Media"
 DEFAULTS_MODELS_SECTION = "Models"
 DEFAULTS_CREDENTIALS_SECTION = "Credentials"
+DEFAULTS_NOTION_SECTION = "Notion"
 DEFAULTS_PROVIDER_AUTO = "auto-detect"
 DEFAULTS_NOT_INFERRED = "not inferred"
 DEFAULTS_OUTPUT_PATH = "<audio>.md, or <from-json>.md when --from-json is used"
@@ -267,6 +234,16 @@ DEFAULTS_TIMEOUT_SECONDS_LABEL = "Timeout"
 DEFAULTS_WITHOUT_DIARIZATION_LABEL = "without diarization"
 DEFAULTS_API_URL_LABEL = "API URL"
 DEFAULTS_API_KEY_LABEL = "API key"
+DEFAULTS_NOTION_UPLOAD_LABEL = "Upload"
+DEFAULTS_NOTION_LIBRARY_LABEL = "Library"
+DEFAULTS_NOTION_TOKEN_LABEL = "Token"
+DEFAULTS_NOTION_PARENT_PAGE_LABEL = "Parent page"
+DEFAULTS_NOTION_TITLE_LABEL = "Page title"
+DEFAULTS_NOTION_DUPLICATE_STRATEGY_LABEL = "Duplicate strategy"
+DEFAULTS_NOTION_TITLE_VALUE = "Markdown title"
+DEFAULTS_SUMMARY = (
+    "These values come from meetdown's current constants and your process environment."
+)
 
 
 def defaults_section(title: str) -> str:
@@ -279,6 +256,37 @@ def defaults_provider_setting(provider: str, setting: str) -> str:
 
 def defaults_provider_inference_error(_error: object) -> str:
     return DEFAULTS_NOT_INFERRED
+
+
+def notion_extra_missing() -> str:
+    return (
+        "Notion upload requires the optional notion extra. Install with "
+        "'uv pip install \"meetdown[notion]\"' or run with "
+        "'uvx --from \"meetdown[notion]\" meetdown'."
+    )
+
+
+def notion_missing_token() -> str:
+    return f"Notion upload requires {NOTION_TOKEN_ENV}."
+
+
+def notion_missing_parent_page() -> str:
+    return (
+        "Notion upload requires --notion-parent-page-id or "
+        f"{NOTION_PARENT_PAGE_ID_ENV}."
+    )
+
+
+def notion_duplicate_strategy_unsupported(value: str) -> str:
+    return f"unsupported Notion duplicate strategy: {value}"
+
+
+def notion_upload_failed(error: object) -> str:
+    return f"Notion upload failed: {error}"
+
+
+def notion_upload_completed() -> str:
+    return "Uploaded Markdown to Notion."
 
 
 TIME_FORMAT_HELP = "time must look like 600, 10m, 01:23, or 01:02:03"
