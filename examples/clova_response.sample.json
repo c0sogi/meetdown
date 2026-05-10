@@ -1,11 +1,11 @@
 {
-  "text": "안녕하세요. 오늘 회의를 시작하겠습니다. 네, 액션 아이템을 정리하겠습니다.",
+  "text": "Hello. We will start today's meeting. Yes, I will organize the action items.",
   "confidence": 0.97,
   "segments": [
     {
       "start": 0,
       "end": 3200,
-      "text": "안녕하세요. 오늘 회의를 시작하겠습니다.",
+      "text": "Hello. We will start today's meeting.",
       "speaker": {
         "label": "1",
         "name": "Alice"
@@ -14,7 +14,7 @@
     {
       "start": 4200,
       "end": 7600,
-      "text": "네, 액션 아이템을 정리하겠습니다.",
+      "text": "Yes, I will organize the action items.",
       "speaker": {
         "label": "2"
       }

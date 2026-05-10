@@ -1,21 +1,21 @@
 # Sample Meeting
 
-## 메타데이터
+## Metadata
 
-- 생성일시: `2026-05-09T19:34:51+09:00`
-- 인식 언어: `ko-KR`
-- 전체 정확도: `0.97`
+- Created at: `2026-05-09T19:34:51+09:00`
+- Recognition language: `ko-KR`
+- Overall confidence: `0.97`
 
-## 전체 텍스트
+## Full text
 
-안녕하세요. 오늘 회의를 시작하겠습니다. 네, 액션 아이템을 정리하겠습니다.
+Hello. We will start today's meeting. Yes, I will organize the action items.
 
-## 발화 기록
+## Transcript
 
 ### 00:00:00 - 00:00:03 / Alice
 
-안녕하세요. 오늘 회의를 시작하겠습니다.
+Hello. We will start today's meeting.
 
 ### 00:00:04 - 00:00:07 / [[SPEAKER_2]]
 
-네, 액션 아이템을 정리하겠습니다.
+Yes, I will organize the action items.

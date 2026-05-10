@@ -86,8 +86,8 @@ def test_offset_response_times_adjusts_segments_words_and_events() -> None:
 
 def test_merge_responses_combines_text_segments_and_confidence() -> None:
     responses: list[JsonObject] = [
-        {"text": "첫 번째", "confidence": 0.8, "segments": [{"text": "첫 번째"}]},
-        {"text": "두 번째", "confidence": 1.0, "segments": [{"text": "두 번째"}]},
+        {"text": "first", "confidence": 0.8, "segments": [{"text": "first"}]},
+        {"text": "second", "confidence": 1.0, "segments": [{"text": "second"}]},
     ]
     merged = merge_responses(responses)
     segments = as_object_list(merged["segments"])
@@ -98,6 +98,6 @@ def test_merge_responses_combines_text_segments_and_confidence() -> None:
         if (segment := as_json_object(item)) is not None
     ]
 
-    assert merged["text"] == "첫 번째 두 번째"
-    assert segment_texts == ["첫 번째", "두 번째"]
+    assert merged["text"] == "first second"
+    assert segment_texts == ["first", "second"]
     assert merged["confidence"] == 0.9

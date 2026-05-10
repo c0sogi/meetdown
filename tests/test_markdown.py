@@ -18,7 +18,7 @@ def test_speaker_name_prefers_name_then_label() -> None:
 
 def test_render_markdown_uses_full_text_and_segments() -> None:
     response: JsonObject = {
-        "text": "전체 텍스트입니다.",
+        "text": "This is the full text.",
         "confidence": 0.95,
         "meetdown": {
             "provider": "clova",
@@ -31,13 +31,13 @@ def test_render_markdown_uses_full_text_and_segments() -> None:
             {
                 "start": 0,
                 "end": 4100,
-                "text": "첫 번째 발화입니다.",
+                "text": "This is the first utterance.",
                 "speaker": {"name": "Alice", "label": "1"},
             },
             {
                 "start": 5100,
                 "end": 9000,
-                "text": "두 번째 발화입니다.",
+                "text": "This is the second utterance.",
                 "speaker": {"label": "2"},
             },
         ],
@@ -45,22 +45,22 @@ def test_render_markdown_uses_full_text_and_segments() -> None:
 
     rendered = render_markdown(
         response,
-        title="회의",
+        title="Meeting",
         source_path="meeting.m4a",
         created_at=datetime(2026, 5, 9, 12, 0, tzinfo=timezone.utc),
     )
 
-    assert "# 회의" in rendered
-    assert "## 처리 옵션" in rendered
+    assert "# Meeting" in rendered
+    assert "## Processing options" in rendered
     assert "- provider: `clova`" in rendered
     assert "- api_key: `se*****ey`" in rendered
-    assert "재실행 커맨드:" in rendered
+    assert "Replay command:" in rendered
     assert (
         'uvx meetdown meeting.m4a -o meeting.md --api-key "<CLOVA Secret Key>"'
         in rendered
     )
     assert "placeholder values must be replaced" in rendered
-    assert "## 전체 텍스트" in rendered
-    assert "전체 텍스트입니다." in rendered
+    assert "## Full text" in rendered
+    assert "This is the full text." in rendered
     assert "### 00:00:00 - 00:00:04 / Alice" in rendered
     assert "### 00:00:05 - 00:00:09 / [[SPEAKER_2]]" in rendered

@@ -1,6 +1,6 @@
 [project]
 name = "meetdown"
-version = "0.1.0"
+version = "0.1.1"
 description = "Generate Markdown meeting transcripts from speech-to-text JSON."
 readme = "README.md"
 requires-python = ">=3.12"

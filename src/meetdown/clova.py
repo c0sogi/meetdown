@@ -3,6 +3,15 @@ from pathlib import Path
 
 import httpx
 
+from meetdown.constants import (
+    CLOVA_API_KEY_HEADER_NAME,
+    CLOVA_COMPLETION_SYNC,
+    CLOVA_UPLOAD_ENDPOINT,
+    DEFAULT_DIARIZATION,
+    DEFAULT_TIMEOUT_SECONDS,
+    DEFAULT_WORD_ALIGNMENT,
+)
+from meetdown import text as ui_text
 from meetdown.json_types import JsonObject, as_json_object
 
 
@@ -11,11 +20,10 @@ class ClovaSpeechError(RuntimeError):
 
 
 DEFAULT_PARAMS: JsonObject = {
-    "language": "ko-KR",
-    "completion": "sync",
+    "completion": CLOVA_COMPLETION_SYNC,
     "fullText": True,
-    "wordAlignment": False,
-    "diarization": {"enable": True},
+    "wordAlignment": DEFAULT_WORD_ALIGNMENT,
+    "diarization": {"enable": DEFAULT_DIARIZATION},
 }
 
 
@@ -26,10 +34,10 @@ def _as_params_dict(value: object) -> JsonObject | None:
 def build_upload_url(invoke_url: str) -> str:
     base = invoke_url.strip().rstrip("/")
     if not base:
-        raise ValueError("invoke_url must not be empty")
-    if base.lower().endswith("/recognizer/upload"):
+        raise ValueError(ui_text.INVOKE_URL_MUST_NOT_BE_EMPTY)
+    if base.lower().endswith(CLOVA_UPLOAD_ENDPOINT):
         return base
-    return f"{base}/recognizer/upload"
+    return f"{base}{CLOVA_UPLOAD_ENDPOINT}"
 
 
 def merge_params(base: JsonObject, overrides: JsonObject | None) -> JsonObject:
@@ -54,14 +62,14 @@ def transcribe_file(
     invoke_url: str,
     secret_key: str,
     params: JsonObject | None = None,
-    timeout_seconds: float = 3600,
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> JsonObject:
     path = Path(audio_path)
     if not path.is_file():
-        raise FileNotFoundError(f"audio file not found: {path}")
+        raise FileNotFoundError(ui_text.audio_file_not_found(path))
 
     request_params = merge_params(DEFAULT_PARAMS, params)
-    headers = {"X-CLOVASPEECH-API-KEY": secret_key}
+    headers = {CLOVA_API_KEY_HEADER_NAME: secret_key}
     upload_url = build_upload_url(invoke_url)
 
     with path.open("rb") as media:
@@ -82,20 +90,16 @@ def transcribe_file(
     except httpx.HTTPStatusError as exc:
         body = response.text[:1000]
         raise ClovaSpeechError(
-            f"CLOVA Speech request failed with HTTP {response.status_code}: {body}"
+            ui_text.clova_http_failed(response.status_code, body)
         ) from exc
 
     try:
         result: object = response.json()
     except json.JSONDecodeError as exc:
         body = response.text[:1000]
-        raise ClovaSpeechError(
-            f"CLOVA Speech returned non-JSON response: {body}"
-        ) from exc
+        raise ClovaSpeechError(ui_text.clova_returned_non_json(body)) from exc
 
     json_result = as_json_object(result)
     if json_result is None:
-        raise ClovaSpeechError(
-            "CLOVA Speech returned a JSON value that is not an object"
-        )
+        raise ClovaSpeechError(ui_text.CLOVA_RETURNED_NON_OBJECT)
     return json_result

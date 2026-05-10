@@ -2,10 +2,11 @@
 
 `meetdown` is a small Python CLI for turning meeting audio into a Markdown transcript.
 
-The default provider is NAVER Cloud Platform CLOVA Speech. The CLI sends a local
-audio or video file to a speech provider, normalizes the response, and writes a
-`.md` file with the full text and speaker-by-speaker transcript when the provider
-returns speaker information.
+The CLI sends a local audio or video file to a speech provider, normalizes the
+response, and writes a `.md` file with the full text and speaker-by-speaker
+transcript when the provider returns speaker information. When `--provider` is
+omitted, meetdown auto-detects the provider from configured provider-specific
+credentials.
 
 ## Install and run
 
@@ -34,29 +35,71 @@ You can also pass them directly:
 uvx meetdown meeting.m4a -o meeting.md --api-url "https://your.invoke.url" --api-key "your-secret-key"
 ```
 
-## Providers
-
-The default provider is CLOVA Speech:
+Run `meetdown` without arguments, or use `--help`, to see the current defaults
+and provider auto-detection status without transcribing anything. In interactive
+terminals, the defaults are color-coded by area; set `NO_COLOR=1` to keep plain
+text output.
 
 ```powershell
-uvx meetdown meeting.m4a -o meeting.md --provider clova --api-url "https://your.invoke.url" --api-key "your-secret-key"
+uvx meetdown
+uvx meetdown --help
+```
+
+Recognition language defaults to `auto`, so meetdown does not force a single
+language when audio contains a mix such as English and Korean. Pass
+`--language ko-KR`, `--language en-US`, or another provider-supported language
+when you want to bias recognition toward one language.
+
+## Python API
+
+Use the top-level package API when you want to call meetdown from Python instead
+of shelling out to the CLI:
+
+```python
+from meetdown import render_markdown, transcribe_file, write_markdown
+
+response = transcribe_file("meeting.m4a", provider="openai")
+markdown = render_markdown(
+    response,
+    title="Weekly sync",
+    source_path="meeting.m4a",
+)
+write_markdown("meeting.md", markdown)
+```
+
+`transcribe_file` uses the same provider resolution rules as the CLI. For more
+control, import `resolve_provider_config` and `transcribe_with_provider` from
+`meetdown` and keep the provider config in your own application code.
+
+## Providers
+
+If `--provider` is omitted, meetdown picks a provider only when exactly one
+provider-specific API key is configured. Pass `--provider` explicitly when more
+than one provider key is present, or when you pass only a generic `--api-key` or
+`MEETDOWN_API_KEY`.
+
+CLOVA Speech can be selected automatically when you provide a CLOVA Invoke URL
+and key:
+
+```powershell
+uvx meetdown meeting.m4a -o meeting.md --api-url "https://your.invoke.url" --api-key "your-secret-key"
 ```
 
 For CLOVA, `--api-url` is the CLOVA Speech Invoke URL from NAVER Cloud Platform.
 You may pass either the base Invoke URL or a URL that already ends with
 `/recognizer/upload`.
 
-OpenAI and Gemini can be selected with `--provider`. Use `--api-key` directly or
-set the provider environment variable. Use `--api-url` when you need to override
-the provider endpoint or base URL:
+OpenAI and Gemini can be selected automatically from their provider-specific
+environment variables. Use `--api-url` when you need to override the provider
+endpoint or base URL:
 
 ```powershell
 $env:OPENAI_API_KEY="your-openai-key"
-uvx meetdown meeting.m4a -o meeting.md --provider openai --chunk-duration 10m
+uvx meetdown meeting.m4a -o meeting.md --chunk-duration 10m
 uvx meetdown meeting.m4a -o meeting.md --provider openai --api-url "https://api.openai.com/v1"
 
 $env:GEMINI_API_KEY="your-gemini-key"
-uvx meetdown meeting.m4a -o meeting.md --provider gemini --chunk-duration 10m
+uvx meetdown meeting.m4a -o meeting.md --chunk-duration 10m
 ```
 
 Use `--model` to override the provider default model. CLOVA does not support
@@ -107,7 +150,7 @@ If you already have a CLOVA Speech JSON response, convert it without calling the
 uvx meetdown --from-json examples/clova_response.sample.json -o sample.md --title "Sample Meeting"
 ```
 
-Generated Markdown includes a `처리 옵션` section with the provider, model, language,
+Generated Markdown includes a `Processing options` section with the provider, model, language,
 compression, chunking, range, timeout settings, and a replay command for the run.
 Raw API keys are never written. They are stored only in masked form, such as
 `sk-p********7890`. Replay commands use `<...>` placeholders for secret values;
@@ -119,7 +162,7 @@ with Replace All and change to real names after you identify the speakers.
 
 ## Initial scope
 
-This project intentionally starts small. It supports one local file, CLOVA Speech sync
-recognition, full text output, speaker-segment output, and Markdown file generation.
+This project intentionally starts small. It supports one local file, provider-backed
+speech recognition, full text output, speaker-segment output, and Markdown file generation.
 Summaries, decisions, action items, database storage, web UI, async callbacks, and batch
 processing are later extensions.

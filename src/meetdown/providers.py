@@ -6,11 +6,42 @@ import mimetypes
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 import httpx
 
 from meetdown.clova import ClovaSpeechError, transcribe_file as transcribe_clova_file
+from meetdown.constants import (
+    CLOVA_API_KEY_ENV_NAMES,
+    CLOVA_API_URL_ENV_NAMES,
+    CLOVA_AUTO_DETECT_API_KEY_ENV_NAMES,
+    CLOVA_COMPLETION_SYNC,
+    CLOVA_MODEL_DESCRIPTION,
+    DEFAULT_DIARIZATION,
+    GEMINI_API_KEY_ENV_NAMES,
+    GEMINI_API_URL_ENV_NAMES,
+    GEMINI_AUTO_DETECT_API_KEY_ENV_NAMES,
+    GEMINI_DEFAULT_API_URL,
+    GEMINI_DEFAULT_MODEL,
+    GEMINI_GENERATE_CONTENT_SUFFIX,
+    GEMINI_INLINE_LIMIT_BYTES,
+    LANGUAGE_AUTO,
+    MEETDOWN_API_KEY_ENV,
+    OPENAI_API_KEY_ENV_NAMES,
+    OPENAI_API_URL_ENV_NAMES,
+    OPENAI_AUTO_DETECT_API_KEY_ENV_NAMES,
+    OPENAI_AUDIO_TRANSCRIPTIONS_PATH,
+    OPENAI_DEFAULT_API_URL,
+    OPENAI_DEFAULT_MODEL,
+    OPENAI_DEFAULT_NO_DIARIZATION_MODEL,
+    OPENAI_DIARIZATION_MODEL_MARKER,
+    OPENAI_WHISPER_MODEL,
+    PROVIDER_CLOVA,
+    PROVIDER_GEMINI,
+    PROVIDER_OPENAI,
+    ProviderName,
+    SUPPORTED_PROVIDERS,
+)
+from meetdown import text as ui_text
 from meetdown.json_types import (
     JsonObject,
     as_json_object,
@@ -18,16 +49,6 @@ from meetdown.json_types import (
     as_object_list,
     require_json_object,
 )
-
-ProviderName = Literal["clova", "openai", "gemini"]
-
-CLOVA_MODEL_DESCRIPTION = "CLOVA Speech domain model (not configurable by --model)"
-OPENAI_DEFAULT_MODEL = "gpt-4o-transcribe-diarize"
-OPENAI_DEFAULT_NO_DIARIZATION_MODEL = "gpt-4o-mini-transcribe"
-OPENAI_DEFAULT_API_URL = "https://api.openai.com/v1/audio/transcriptions"
-GEMINI_DEFAULT_MODEL = "gemini-3-flash-preview"
-GEMINI_DEFAULT_API_URL = "https://generativelanguage.googleapis.com/v1beta"
-GEMINI_INLINE_LIMIT_BYTES = 19 * 1024 * 1024
 
 _AUDIO_MIME_BY_SUFFIX = {
     ".aac": "audio/aac",
@@ -60,34 +81,82 @@ class ProviderConfig:
 
 
 def normalize_provider(value: str) -> ProviderName:
-    provider = value.strip().lower()
-    if provider == "clova":
-        return "clova"
-    if provider == "openai":
-        return "openai"
-    if provider == "gemini":
-        return "gemini"
-    raise ValueError("provider must be one of: clova, openai, gemini")
+    normalized = value.strip().lower()
+    for provider in SUPPORTED_PROVIDERS:
+        if normalized == provider:
+            return provider
+    raise ValueError(ui_text.provider_must_be_supported())
+
+
+def _first_env(*names: str) -> str | None:
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return None
+
+
+def infer_provider_from_credentials(
+    *,
+    api_url: str | None = None,
+    api_key: str | None = None,
+    clova_invoke_url: str | None = None,
+    clova_secret_key: str | None = None,
+) -> ProviderName:
+    if clova_secret_key or (api_key and (api_url or clova_invoke_url)):
+        return PROVIDER_CLOVA
+
+    candidates: list[ProviderName] = []
+
+    clova_key = _first_value(
+        clova_secret_key, _first_env(*CLOVA_AUTO_DETECT_API_KEY_ENV_NAMES)
+    )
+    clova_url = _first_value(
+        api_url, clova_invoke_url, _first_env(*CLOVA_API_URL_ENV_NAMES)
+    )
+    if clova_key or (api_key and clova_url):
+        candidates.append(PROVIDER_CLOVA)
+
+    if _first_env(*OPENAI_AUTO_DETECT_API_KEY_ENV_NAMES):
+        candidates.append(PROVIDER_OPENAI)
+
+    if _first_env(*GEMINI_AUTO_DETECT_API_KEY_ENV_NAMES):
+        candidates.append(PROVIDER_GEMINI)
+
+    if len(candidates) == 1:
+        return candidates[0]
+
+    if len(candidates) > 1:
+        raise ValueError(ui_text.provider_is_ambiguous(candidates))
+
+    generic_key = _first_value(api_key, _first_env(MEETDOWN_API_KEY_ENV))
+    if generic_key:
+        raise ValueError(ui_text.provider_generic_key_is_ambiguous())
+
+    raise ValueError(ui_text.provider_could_not_be_inferred())
 
 
 def provider_model(
-    provider: ProviderName, model: str | None, *, diarization: bool = True
+    provider: ProviderName,
+    model: str | None,
+    *,
+    diarization: bool = DEFAULT_DIARIZATION,
 ) -> str | None:
-    if provider == "openai":
+    if provider == PROVIDER_OPENAI:
         if model:
             return model
         return (
             OPENAI_DEFAULT_MODEL if diarization else OPENAI_DEFAULT_NO_DIARIZATION_MODEL
         )
-    if provider == "gemini":
+    if provider == PROVIDER_GEMINI:
         return model or GEMINI_DEFAULT_MODEL
     return model
 
 
 def provider_display_model(config: ProviderConfig) -> str:
-    if config.provider == "clova":
+    if config.provider == PROVIDER_CLOVA:
         return CLOVA_MODEL_DESCRIPTION
-    if config.provider == "openai":
+    if config.provider == PROVIDER_OPENAI:
         return config.openai_model
     return config.gemini_model
 
@@ -103,25 +172,27 @@ def openai_transcriptions_url(api_url: str | None) -> str:
     if not api_url:
         return OPENAI_DEFAULT_API_URL
     normalized = api_url.rstrip("/")
-    if normalized.endswith("/audio/transcriptions"):
+    if normalized.endswith(OPENAI_AUDIO_TRANSCRIPTIONS_PATH):
         return normalized
-    return f"{normalized}/audio/transcriptions"
+    return f"{normalized}{OPENAI_AUDIO_TRANSCRIPTIONS_PATH}"
 
 
 def gemini_generate_content_url(api_url: str | None, model: str) -> str:
     if not api_url:
-        return f"{GEMINI_DEFAULT_API_URL}/models/{model}:generateContent"
+        return (
+            f"{GEMINI_DEFAULT_API_URL}/models/{model}{GEMINI_GENERATE_CONTENT_SUFFIX}"
+        )
     normalized = api_url.rstrip("/")
     if "{model}" in normalized:
         return normalized.format(model=model)
-    if normalized.endswith(":generateContent"):
+    if normalized.endswith(GEMINI_GENERATE_CONTENT_SUFFIX):
         return normalized
-    return f"{normalized}/models/{model}:generateContent"
+    return f"{normalized}/models/{model}{GEMINI_GENERATE_CONTENT_SUFFIX}"
 
 
 def resolve_provider_config(
     *,
-    provider: str,
+    provider: str | None,
     language: str,
     timeout_seconds: float,
     word_alignment: bool,
@@ -132,32 +203,35 @@ def resolve_provider_config(
     clova_invoke_url: str | None = None,
     clova_secret_key: str | None = None,
 ) -> ProviderConfig:
-    normalized = normalize_provider(provider)
+    normalized = (
+        normalize_provider(provider)
+        if provider
+        else infer_provider_from_credentials(
+            api_url=api_url,
+            api_key=api_key,
+            clova_invoke_url=clova_invoke_url,
+            clova_secret_key=clova_secret_key,
+        )
+    )
     resolved_model = provider_model(normalized, model, diarization=diarization)
 
-    if normalized == "clova":
+    if normalized == PROVIDER_CLOVA:
         if model:
-            raise ValueError("--model is not supported for clova")
+            raise ValueError(ui_text.clova_model_not_supported())
         resolved_url = _first_value(
             api_url,
             clova_invoke_url,
-            os.getenv("CLOVA_SPEECH_INVOKE_URL"),
-            os.getenv("MEETDOWN_API_URL"),
+            _first_env(*CLOVA_API_URL_ENV_NAMES),
         )
         resolved_key = _first_value(
             api_key,
             clova_secret_key,
-            os.getenv("CLOVA_SPEECH_SECRET_KEY"),
-            os.getenv("MEETDOWN_API_KEY"),
+            _first_env(*CLOVA_API_KEY_ENV_NAMES),
         )
         if not resolved_url:
-            raise ValueError(
-                "--api-url or CLOVA_SPEECH_INVOKE_URL is required for clova"
-            )
+            raise ValueError(ui_text.clova_missing_api_url())
         if not resolved_key:
-            raise ValueError(
-                "--api-key or CLOVA_SPEECH_SECRET_KEY is required for clova"
-            )
+            raise ValueError(ui_text.clova_missing_api_key())
         return ProviderConfig(
             provider=normalized,
             language=language,
@@ -168,12 +242,10 @@ def resolve_provider_config(
             api_key=resolved_key,
         )
 
-    if normalized == "openai":
-        openai_key = _first_value(
-            api_key, os.getenv("OPENAI_API_KEY"), os.getenv("MEETDOWN_API_KEY")
-        )
+    if normalized == PROVIDER_OPENAI:
+        openai_key = _first_value(api_key, _first_env(*OPENAI_API_KEY_ENV_NAMES))
         if not openai_key:
-            raise ValueError("--api-key or OPENAI_API_KEY is required for openai")
+            raise ValueError(ui_text.openai_missing_api_key())
         return ProviderConfig(
             provider=normalized,
             language=language,
@@ -182,9 +254,7 @@ def resolve_provider_config(
             diarization=diarization,
             api_url=_first_value(
                 api_url,
-                os.getenv("OPENAI_API_URL"),
-                os.getenv("OPENAI_BASE_URL"),
-                os.getenv("MEETDOWN_API_URL"),
+                _first_env(*OPENAI_API_URL_ENV_NAMES),
             ),
             api_key=openai_key,
             openai_model=resolved_model or OPENAI_DEFAULT_MODEL,
@@ -192,14 +262,10 @@ def resolve_provider_config(
 
     gemini_key = _first_value(
         api_key,
-        os.getenv("GEMINI_API_KEY"),
-        os.getenv("GOOGLE_API_KEY"),
-        os.getenv("MEETDOWN_API_KEY"),
+        _first_env(*GEMINI_API_KEY_ENV_NAMES),
     )
     if not gemini_key:
-        raise ValueError(
-            "--api-key, GEMINI_API_KEY, or GOOGLE_API_KEY is required for gemini"
-        )
+        raise ValueError(ui_text.gemini_missing_api_key())
     return ProviderConfig(
         provider=normalized,
         language=language,
@@ -208,9 +274,7 @@ def resolve_provider_config(
         diarization=diarization,
         api_url=_first_value(
             api_url,
-            os.getenv("GEMINI_API_URL"),
-            os.getenv("GOOGLE_API_URL"),
-            os.getenv("MEETDOWN_API_URL"),
+            _first_env(*GEMINI_API_URL_ENV_NAMES),
         ),
         api_key=gemini_key,
         gemini_model=resolved_model or GEMINI_DEFAULT_MODEL,
@@ -220,16 +284,17 @@ def resolve_provider_config(
 def transcribe_with_provider(
     audio_path: str | Path, config: ProviderConfig
 ) -> JsonObject:
-    if config.provider == "clova":
+    if config.provider == PROVIDER_CLOVA:
         if config.api_url is None or config.api_key is None:
-            raise ProviderError("clova provider is missing API URL or API key")
+            raise ProviderError(ui_text.missing_provider_config(config.provider))
         params: JsonObject = {
-            "language": config.language,
-            "completion": "sync",
+            "completion": CLOVA_COMPLETION_SYNC,
             "fullText": True,
             "wordAlignment": config.word_alignment,
             "diarization": {"enable": config.diarization},
         }
+        if not _is_auto_language(config.language):
+            params["language"] = config.language
         try:
             return transcribe_clova_file(
                 audio_path,
@@ -241,15 +306,19 @@ def transcribe_with_provider(
         except ClovaSpeechError as exc:
             raise ProviderError(str(exc)) from exc
 
-    if config.provider == "openai":
+    if config.provider == PROVIDER_OPENAI:
         return transcribe_openai_file(audio_path, config)
-    if config.provider == "gemini":
+    if config.provider == PROVIDER_GEMINI:
         return transcribe_gemini_file(audio_path, config)
-    raise ProviderError(f"unsupported provider: {config.provider}")
+    raise ProviderError(ui_text.unsupported_provider(config.provider))
 
 
 def _iso_639_language(language: str) -> str:
     return language.split("-", 1)[0].lower()
+
+
+def _is_auto_language(language: str) -> bool:
+    return language.strip().lower() == LANGUAGE_AUTO
 
 
 def _mime_type(path: Path) -> str:
@@ -319,18 +388,19 @@ def transcribe_openai_file(
 ) -> JsonObject:
     path = Path(audio_path)
     if not path.is_file():
-        raise FileNotFoundError(f"audio file not found: {path}")
+        raise FileNotFoundError(ui_text.audio_file_not_found(path))
     if config.api_key is None:
-        raise ProviderError("openai provider is missing API key")
+        raise ProviderError(ui_text.missing_api_key(config.provider))
 
     data: dict[str, str] = {
         "model": config.openai_model,
-        "language": _iso_639_language(config.language),
     }
-    if "diarize" in config.openai_model:
+    if not _is_auto_language(config.language):
+        data["language"] = _iso_639_language(config.language)
+    if OPENAI_DIARIZATION_MODEL_MARKER in config.openai_model:
         data["response_format"] = "diarized_json"
         data["chunking_strategy"] = "auto"
-    elif config.openai_model == "whisper-1":
+    elif config.openai_model == OPENAI_WHISPER_MODEL:
         data["response_format"] = "verbose_json"
     else:
         data["response_format"] = "json"
@@ -350,35 +420,20 @@ def transcribe_openai_file(
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
         raise ProviderError(
-            f"OpenAI transcription failed with HTTP {response.status_code}: {response.text[:1000]}"
+            ui_text.provider_http_failed(
+                "OpenAI", response.status_code, response.text[:1000]
+            )
         ) from exc
 
     try:
         loaded: object = response.json()
     except json.JSONDecodeError as exc:
         raise ProviderError(
-            f"OpenAI returned non-JSON response: {response.text[:1000]}"
+            ui_text.provider_returned_non_json("OpenAI", response.text[:1000])
         ) from exc
 
     return _normalize_provider_response(
-        require_json_object(
-            loaded, "OpenAI returned a JSON value that is not an object"
-        )
-    )
-
-
-def _gemini_prompt(language: str, diarization: bool) -> str:
-    speaker_instruction = (
-        "Include speaker labels when you can identify speaker changes."
-        if diarization
-        else "Do not invent speaker labels."
-    )
-    return (
-        "Transcribe this meeting audio. Return only JSON with this shape: "
-        '{"text":"full transcript","segments":[{"start":0,"end":0,'
-        '"text":"segment transcript","speaker":{"label":"1"}}]}. '
-        "Use seconds for start and end. "
-        f"The expected language is {language}. {speaker_instruction}"
+        require_json_object(loaded, ui_text.provider_returned_non_object("OpenAI"))
     )
 
 
@@ -407,21 +462,22 @@ def transcribe_gemini_file(
 ) -> JsonObject:
     path = Path(audio_path)
     if not path.is_file():
-        raise FileNotFoundError(f"audio file not found: {path}")
+        raise FileNotFoundError(ui_text.audio_file_not_found(path))
     if config.api_key is None:
-        raise ProviderError("gemini provider is missing API key")
+        raise ProviderError(ui_text.missing_api_key(config.provider))
     if path.stat().st_size > GEMINI_INLINE_LIMIT_BYTES:
-        raise ProviderError(
-            "Gemini inline audio requests are limited to about 20 MB. "
-            "Use --chunk-duration or --compress smallest."
-        )
+        raise ProviderError(ui_text.GEMINI_INLINE_LIMIT_EXCEEDED)
 
     encoded = base64.b64encode(path.read_bytes()).decode("ascii")
     body: JsonObject = {
         "contents": [
             {
                 "parts": [
-                    {"text": _gemini_prompt(config.language, config.diarization)},
+                    {
+                        "text": ui_text.gemini_transcription_prompt(
+                            config.language, config.diarization
+                        )
+                    },
                     {"inline_data": {"mime_type": _mime_type(path), "data": encoded}},
                 ]
             }
@@ -439,23 +495,25 @@ def transcribe_gemini_file(
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
         raise ProviderError(
-            f"Gemini transcription failed with HTTP {response.status_code}: {response.text[:1000]}"
+            ui_text.provider_http_failed(
+                "Gemini", response.status_code, response.text[:1000]
+            )
         ) from exc
 
     try:
         loaded: object = response.json()
     except json.JSONDecodeError as exc:
         raise ProviderError(
-            f"Gemini returned non-JSON response: {response.text[:1000]}"
+            ui_text.provider_returned_non_json("Gemini", response.text[:1000])
         ) from exc
 
     response_json = require_json_object(
-        loaded, "Gemini returned a JSON value that is not an object"
+        loaded, ui_text.provider_returned_non_object("Gemini")
     )
     text = _gemini_text(response_json)
     try:
         model_json = require_json_object(
-            json.loads(text), "Gemini transcript was not a JSON object"
+            json.loads(text), ui_text.GEMINI_TRANSCRIPT_NOT_OBJECT
         )
     except (json.JSONDecodeError, ValueError):
         return {"text": text, "segments": []}

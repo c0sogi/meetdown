@@ -8,7 +8,9 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Protocol, cast
 
+from meetdown.constants import CHUNK_FORMAT_FLAC, CHUNK_FORMAT_MP3, CHUNK_FORMAT_WAV
 from meetdown.json_types import JsonObject, as_json_object, as_number, as_object_list
+from meetdown import text as ui_text
 
 
 class ChunkingError(RuntimeError):
@@ -27,9 +29,9 @@ class _ImageioFfmpegModule(Protocol):
 
 _DURATION_RE = re.compile(r"^(?P<value>\d+(?:\.\d+)?)(?P<unit>s|m|h)?$")
 _CHUNK_FORMATS: dict[str, tuple[str, list[str]]] = {
-    "flac": (".flac", ["-acodec", "flac", "-compression_level", "8"]),
-    "mp3": (".mp3", ["-acodec", "libmp3lame", "-b:a", "64k"]),
-    "wav": (".wav", ["-acodec", "pcm_s16le"]),
+    CHUNK_FORMAT_FLAC: (".flac", ["-acodec", "flac", "-compression_level", "8"]),
+    CHUNK_FORMAT_MP3: (".mp3", ["-acodec", "libmp3lame", "-b:a", "64k"]),
+    CHUNK_FORMAT_WAV: (".wav", ["-acodec", "pcm_s16le"]),
 }
 _FFMPEG_DURATION_RE = re.compile(
     r"Duration:\s*(?P<hours>\d+):(?P<minutes>\d+):(?P<seconds>\d+(?:\.\d+)?)"
@@ -41,19 +43,17 @@ def parse_time_seconds(value: str) -> float:
     if ":" in text:
         parts = text.split(":")
         if len(parts) not in (2, 3):
-            raise ValueError("time must look like 600, 10m, 01:23, or 01:02:03")
+            raise ValueError(ui_text.TIME_FORMAT_HELP)
 
         try:
             numbers = [float(part) for part in parts]
         except ValueError as exc:
-            raise ValueError(
-                "time must look like 600, 10m, 01:23, or 01:02:03"
-            ) from exc
+            raise ValueError(ui_text.TIME_FORMAT_HELP) from exc
 
         if any(number < 0 for number in numbers):
-            raise ValueError("time must not be negative")
+            raise ValueError(ui_text.TIME_MUST_NOT_BE_NEGATIVE)
         if any(number >= 60 for number in numbers[1:]):
-            raise ValueError("minute and second fields must be less than 60")
+            raise ValueError(ui_text.TIME_FIELDS_MUST_BE_UNDER_60)
 
         if len(numbers) == 2:
             minutes, seconds = numbers
@@ -64,21 +64,21 @@ def parse_time_seconds(value: str) -> float:
 
     match = _DURATION_RE.match(text)
     if not match:
-        raise ValueError("time must look like 600, 600s, 10m, 01:23, or 01:02:03")
+        raise ValueError(ui_text.TIME_FORMAT_WITH_SECONDS_SUFFIX_HELP)
 
     amount = float(match.group("value"))
     unit = match.group("unit") or "s"
     multiplier = {"s": 1, "m": 60, "h": 3600}[unit]
     seconds = amount * multiplier
     if seconds < 0:
-        raise ValueError("time must not be negative")
+        raise ValueError(ui_text.TIME_MUST_NOT_BE_NEGATIVE)
     return seconds
 
 
 def parse_duration_seconds(value: str) -> float:
     seconds = parse_time_seconds(value)
     if seconds <= 0:
-        raise ValueError("duration must be greater than zero")
+        raise ValueError(ui_text.DURATION_MUST_BE_POSITIVE)
     return seconds
 
 
@@ -86,7 +86,7 @@ def normalize_chunk_format(value: str) -> str:
     chunk_format = value.strip().lower()
     if chunk_format not in _CHUNK_FORMATS:
         supported = ", ".join(sorted(_CHUNK_FORMATS))
-        raise ValueError(f"chunk format must be one of: {supported}")
+        raise ValueError(ui_text.chunk_format_must_be_supported(supported))
     return chunk_format
 
 
@@ -98,9 +98,9 @@ def chunk_extension(chunk_format: str) -> str:
 
 def validate_time_range(start_seconds: float, end_seconds: float | None) -> None:
     if start_seconds < 0:
-        raise ValueError("start time must not be negative")
+        raise ValueError(ui_text.START_TIME_MUST_NOT_BE_NEGATIVE)
     if end_seconds is not None and end_seconds <= start_seconds:
-        raise ValueError("end time must be greater than start time")
+        raise ValueError(ui_text.END_TIME_MUST_BE_AFTER_START)
 
 
 @lru_cache(maxsize=1)
@@ -115,10 +115,7 @@ def ffmpeg_executable() -> str:
             importlib.import_module("imageio_ffmpeg"),
         )
     except ImportError as exc:
-        raise ChunkingError(
-            "ffmpeg is required for media extraction. Install ffmpeg or install "
-            "meetdown with the imageio-ffmpeg dependency."
-        ) from exc
+        raise ChunkingError(ui_text.ffmpeg_required()) from exc
 
     return imageio_ffmpeg.get_ffmpeg_exe()
 
@@ -143,24 +140,24 @@ def _run_ffmpeg(command: list[str], *, action: str) -> None:
     try:
         completed = subprocess.run(command, check=False, capture_output=True, text=True)
     except OSError as exc:
-        raise ChunkingError(f"ffmpeg failed to start for {action}: {exc}") from exc
+        raise ChunkingError(ui_text.ffmpeg_failed_to_start(action, exc)) from exc
 
     if completed.returncode != 0:
-        stderr = completed.stderr.strip() or "unknown ffmpeg error"
-        raise ChunkingError(f"ffmpeg failed to {action}: {stderr}")
+        stderr = completed.stderr.strip() or ui_text.UNKNOWN_FFMPEG_ERROR
+        raise ChunkingError(ui_text.ffmpeg_failed(action, stderr))
 
 
 def _parse_ffmpeg_duration(stderr: str) -> float:
     match = _FFMPEG_DURATION_RE.search(stderr)
     if not match:
-        raise ChunkingError("ffmpeg could not read media duration")
+        raise ChunkingError(ui_text.FFMPEG_DURATION_UNREADABLE)
 
     hours = float(match.group("hours"))
     minutes = float(match.group("minutes"))
     seconds = float(match.group("seconds"))
     duration = hours * 3600 + minutes * 60 + seconds
     if duration <= 0:
-        raise ChunkingError("media duration must be greater than zero")
+        raise ChunkingError(ui_text.MEDIA_DURATION_MUST_BE_POSITIVE)
     return duration
 
 
@@ -180,7 +177,7 @@ def _probe_media_duration_with_ffmpeg(source: Path) -> float:
         completed = subprocess.run(command, check=False, capture_output=True, text=True)
     except OSError as exc:
         raise ChunkingError(
-            f"ffmpeg failed to start for duration probing: {exc}"
+            ui_text.ffmpeg_failed_to_start("duration probing", exc)
         ) from exc
 
     return _parse_ffmpeg_duration(completed.stderr)
@@ -213,10 +210,10 @@ def probe_media_duration_seconds(input_path: str | Path) -> float:
     try:
         duration = float(completed.stdout.strip())
     except ValueError as exc:
-        raise ChunkingError("ffprobe could not read media duration") from exc
+        raise ChunkingError(ui_text.FFPROBE_DURATION_UNREADABLE) from exc
 
     if duration <= 0:
-        raise ChunkingError("media duration must be greater than zero")
+        raise ChunkingError(ui_text.MEDIA_DURATION_MUST_BE_POSITIVE)
     return duration
 
 
@@ -240,11 +237,11 @@ def extract_media(
     *,
     start_seconds: float = 0,
     end_seconds: float | None = None,
-    chunk_format: str = "flac",
+    chunk_format: str = CHUNK_FORMAT_FLAC,
 ) -> MediaChunk:
     source = Path(input_path)
     if not source.is_file():
-        raise FileNotFoundError(f"audio file not found: {source}")
+        raise FileNotFoundError(ui_text.audio_file_not_found(source))
 
     validate_time_range(start_seconds, end_seconds)
     normalized_format = normalize_chunk_format(chunk_format)
@@ -278,13 +275,13 @@ def split_media(
     output_dir: str | Path,
     chunk_seconds: float,
     *,
-    chunk_format: str = "flac",
+    chunk_format: str = CHUNK_FORMAT_FLAC,
     start_seconds: float = 0,
     end_seconds: float | None = None,
 ) -> list[MediaChunk]:
     source = Path(input_path)
     if not source.is_file():
-        raise FileNotFoundError(f"audio file not found: {source}")
+        raise FileNotFoundError(ui_text.audio_file_not_found(source))
 
     validate_time_range(start_seconds, end_seconds)
     normalized_format = normalize_chunk_format(chunk_format)
@@ -329,7 +326,7 @@ def split_media(
         index += 1
 
     if not chunks:
-        raise ChunkingError("ffmpeg did not create any chunks")
+        raise ChunkingError(ui_text.FFMPEG_NO_CHUNKS)
     return chunks
 
 
@@ -394,7 +391,7 @@ def merge_responses(responses: list[JsonObject]) -> JsonObject:
 
     merged: JsonObject = {
         "result": "COMPLETED",
-        "message": "Merged chunked transcription",
+        "message": ui_text.MERGED_CHUNKED_TRANSCRIPTION,
         "text": " ".join(texts),
         "segments": adjusted_segments,
     }

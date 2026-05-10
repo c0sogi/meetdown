@@ -1,5 +1,33 @@
 """Markdown transcript generation for meeting audio."""
 
-__all__ = ["__version__"]
+from importlib.metadata import PackageNotFoundError, version
 
-__version__ = "0.1.0"
+from meetdown.api import transcribe_file
+from meetdown.constants import APP_NAME
+from meetdown.json_types import JsonObject
+from meetdown.markdown import render_markdown, write_markdown
+from meetdown.providers import (
+    ProviderConfig,
+    ProviderError,
+    infer_provider_from_credentials,
+    resolve_provider_config,
+    transcribe_with_provider,
+)
+
+__all__ = [
+    "JsonObject",
+    "ProviderConfig",
+    "ProviderError",
+    "__version__",
+    "infer_provider_from_credentials",
+    "render_markdown",
+    "resolve_provider_config",
+    "transcribe_file",
+    "transcribe_with_provider",
+    "write_markdown",
+]
+
+try:
+    __version__ = version(APP_NAME)
+except PackageNotFoundError:
+    __version__ = "0+unknown"

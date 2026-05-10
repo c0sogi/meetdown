@@ -17,7 +17,7 @@ def test_build_upload_url_keeps_complete_endpoint() -> None:
 def test_merge_params_preserves_nested_defaults() -> None:
     merged = merge_params(DEFAULT_PARAMS, {"diarization": {"enable": False}})
 
-    assert merged["language"] == "ko-KR"
+    assert "language" not in merged
     assert merged["completion"] == "sync"
     diarization = as_json_object(merged["diarization"])
     assert diarization is not None

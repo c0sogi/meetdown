@@ -1,7 +1,9 @@
 from datetime import datetime
 from pathlib import Path
 
+from meetdown.constants import DEFAULT_LANGUAGE, PROCESSING_REPLAY_COMMAND_KEY
 from meetdown.json_types import JsonObject, as_json_object, as_number, as_object_list
+from meetdown import text as ui_text
 
 
 def speaker_token(label: object | None) -> str:
@@ -36,9 +38,9 @@ def speaker_name(segment: JsonObject) -> str:
 
 def _option_text(value: object) -> str:
     if isinstance(value, bool):
-        return "true" if value else "false"
+        return ui_text.OPTION_TRUE if value else ui_text.OPTION_FALSE
     if value is None:
-        return "not set"
+        return ui_text.OPTION_NOT_SET
     return str(value)
 
 
@@ -47,7 +49,7 @@ def render_markdown(
     *,
     title: str,
     source_path: str | Path | None = None,
-    language: str = "ko-KR",
+    language: str = DEFAULT_LANGUAGE,
     created_at: datetime | None = None,
 ) -> str:
     created = created_at or datetime.now().astimezone()
@@ -60,57 +62,57 @@ def render_markdown(
     lines: list[str] = [
         f"# {title}",
         "",
-        "## 메타데이터",
+        ui_text.MARKDOWN_METADATA_HEADING,
         "",
     ]
 
     if source:
-        lines.append(f"- 원본 파일: `{source}`")
+        lines.append(f"- {ui_text.MARKDOWN_SOURCE_FILE_LABEL}: `{source}`")
     lines.extend(
         [
-            f"- 생성일시: `{created.isoformat(timespec='seconds')}`",
-            f"- 인식 언어: `{language}`",
+            f"- {ui_text.MARKDOWN_CREATED_AT_LABEL}: `{created.isoformat(timespec='seconds')}`",
+            f"- {ui_text.MARKDOWN_LANGUAGE_LABEL}: `{language}`",
         ]
     )
     if confidence is not None:
-        lines.append(f"- 전체 정확도: `{confidence}`")
+        lines.append(f"- {ui_text.MARKDOWN_CONFIDENCE_LABEL}: `{confidence}`")
 
     if processing_options:
-        lines.extend(["", "## 처리 옵션", ""])
+        lines.extend(["", ui_text.MARKDOWN_PROCESSING_HEADING, ""])
         for key, value in processing_options.items():
-            if key == "replay_command":
+            if key == PROCESSING_REPLAY_COMMAND_KEY:
                 continue
             lines.append(f"- {key}: `{_option_text(value)}`")
 
-        replay_command = processing_options.get("replay_command")
+        replay_command = processing_options.get(PROCESSING_REPLAY_COMMAND_KEY)
         if replay_command:
             lines.extend(
                 [
                     "",
-                    "재실행 커맨드:",
+                    ui_text.MARKDOWN_REPLAY_COMMAND_LABEL,
                     "",
                     "```powershell",
                     str(replay_command),
                     "```",
                     "",
-                    "`<...>` placeholder values must be replaced before running this command.",
+                    ui_text.MARKDOWN_PLACEHOLDER_NOTE,
                 ]
             )
 
     lines.extend(
         [
             "",
-            "## 전체 텍스트",
+            ui_text.MARKDOWN_FULL_TEXT_HEADING,
             "",
-            full_text or "_전체 텍스트 없음_",
+            full_text or ui_text.MARKDOWN_NO_FULL_TEXT,
             "",
-            "## 발화 기록",
+            ui_text.MARKDOWN_TRANSCRIPT_HEADING,
             "",
         ]
     )
 
     if not segments:
-        lines.append("_발화 구간 없음_")
+        lines.append(ui_text.MARKDOWN_NO_SEGMENTS)
         lines.append("")
         return "\n".join(lines).rstrip() + "\n"
 
@@ -128,7 +130,7 @@ def render_markdown(
             [
                 f"### {start} - {end} / {speaker}",
                 "",
-                text or "_내용 없음_",
+                text or ui_text.MARKDOWN_NO_CONTENT,
                 "",
             ]
         )
