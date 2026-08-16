@@ -29,7 +29,7 @@ CLOVA_MODEL_DESCRIPTION: Final = (
     "CLOVA Speech domain model (not configurable by --model)"
 )
 OPENAI_DEFAULT_MODEL: Final = "gpt-4o-transcribe-diarize"
-OPENAI_DEFAULT_NO_DIARIZATION_MODEL: Final = "gpt-4o-mini-transcribe"
+OPENAI_DEFAULT_NO_DIARIZATION_MODEL: Final = "gpt-transcribe"
 OPENAI_DEFAULT_API_URL: Final = "https://api.openai.com/v1/audio/transcriptions"
 OPENAI_AUDIO_TRANSCRIPTIONS_PATH: Final = "/audio/transcriptions"
 OPENAI_DIARIZATION_MODEL_MARKER: Final = "diarize"
