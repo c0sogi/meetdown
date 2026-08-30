@@ -40,6 +40,7 @@ from meetdown.constants import (
     PROVIDER_CLOVA,
     PROVIDER_GEMINI,
     PROVIDER_OPENAI,
+    PROVIDER_USAGES_KEY,
     SUPPORTED_PROVIDERS,
     ProviderName,
 )
@@ -418,6 +419,15 @@ def _normalize_provider_response(
     return normalized
 
 
+def _attach_provider_usage(
+    normalized: JsonObject, provider_response: JsonObject, usage_key: str
+) -> JsonObject:
+    usage = as_json_object(provider_response.get(usage_key))
+    if usage is not None:
+        normalized[PROVIDER_USAGES_KEY] = [usage]
+    return normalized
+
+
 def transcribe_openai_file(
     audio_path: str | Path, config: ProviderConfig
 ) -> JsonObject:
@@ -467,9 +477,8 @@ def transcribe_openai_file(
             ui_text.provider_returned_non_json("OpenAI", response.text[:1000])
         ) from exc
 
-    return _normalize_provider_response(
-        require_json_object(loaded, ui_text.provider_returned_non_object("OpenAI"))
-    )
+    result = require_json_object(loaded, ui_text.provider_returned_non_object("OpenAI"))
+    return _attach_provider_usage(_normalize_provider_response(result), result, "usage")
 
 
 def _gemini_text(response: JsonObject) -> str:
@@ -551,5 +560,7 @@ def transcribe_gemini_file(
             json.loads(text), ui_text.GEMINI_TRANSCRIPT_NOT_OBJECT
         )
     except (json.JSONDecodeError, ValueError):
-        return {"text": text, "segments": []}
-    return _normalize_provider_response(model_json, fallback_text=text)
+        normalized: JsonObject = {"text": text, "segments": []}
+    else:
+        normalized = _normalize_provider_response(model_json, fallback_text=text)
+    return _attach_provider_usage(normalized, response_json, "usageMetadata")

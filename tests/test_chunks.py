@@ -9,6 +9,7 @@ from meetdown.chunks import (
     parse_time_seconds,
     validate_time_range,
 )
+from meetdown.constants import PROVIDER_USAGES_KEY
 from meetdown.json_types import JsonObject, as_json_object, as_object_list
 
 
@@ -86,8 +87,18 @@ def test_offset_response_times_adjusts_segments_words_and_events() -> None:
 
 def test_merge_responses_combines_text_segments_and_confidence() -> None:
     responses: list[JsonObject] = [
-        {"text": "first", "confidence": 0.8, "segments": [{"text": "first"}]},
-        {"text": "second", "confidence": 1.0, "segments": [{"text": "second"}]},
+        {
+            "text": "first",
+            "confidence": 0.8,
+            "segments": [{"text": "first"}],
+            PROVIDER_USAGES_KEY: [{"input_tokens": 100}],
+        },
+        {
+            "text": "second",
+            "confidence": 1.0,
+            "segments": [{"text": "second"}],
+            PROVIDER_USAGES_KEY: [{"input_tokens": 200}],
+        },
     ]
     merged = merge_responses(responses)
     segments = as_object_list(merged["segments"])
@@ -101,3 +112,22 @@ def test_merge_responses_combines_text_segments_and_confidence() -> None:
     assert merged["text"] == "first second"
     assert segment_texts == ["first", "second"]
     assert merged["confidence"] == 0.9
+    assert merged[PROVIDER_USAGES_KEY] == [
+        {"input_tokens": 100},
+        {"input_tokens": 200},
+    ]
+
+
+def test_merge_responses_omits_incomplete_provider_usage() -> None:
+    responses: list[JsonObject] = [
+        {
+            "text": "first",
+            "segments": [],
+            PROVIDER_USAGES_KEY: [{"input_tokens": 100}],
+        },
+        {"text": "second", "segments": []},
+    ]
+
+    merged = merge_responses(responses)
+
+    assert PROVIDER_USAGES_KEY not in merged

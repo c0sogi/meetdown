@@ -25,6 +25,7 @@ from meetdown.chunks import (
     offset_response_times,
     parse_duration_seconds,
     parse_time_seconds,
+    probe_media_duration_seconds,
     split_media,
     validate_time_range,
 )
@@ -98,6 +99,11 @@ from meetdown.providers import (
     provider_display_model,
     resolve_provider_config,
     transcribe_with_provider,
+)
+from meetdown.pricing import (
+    CostEstimate,
+    estimate_transcription_cost,
+    needs_request_duration,
 )
 
 _DEFAULT_SECTION_STYLES = {
@@ -845,8 +851,9 @@ def build_processing_options(
     preprocessing: str,
     chunk_count: int | None,
     output_path: Path,
+    cost_estimate: CostEstimate,
 ) -> JsonObject:
-    return {
+    options: JsonObject = {
         "provider": provider_config.provider,
         "model": provider_display_model(provider_config),
         "language": provider_config.language,
@@ -876,6 +883,8 @@ def build_processing_options(
             output_path=output_path,
         ),
     }
+    options.update(cost_estimate.processing_options())
+    return options
 
 
 def _echo(message: str, *, err: bool = False) -> None:
@@ -921,6 +930,18 @@ def execute_options(args: CliOptions) -> int:
             clova_invoke_url=args.legacy_invoke_url,
             clova_secret_key=args.legacy_secret_key,
         )
+        request_durations_seconds: list[float] = []
+
+        def transcribe_request(path: str | Path) -> JsonObject:
+            if needs_request_duration(provider_config):
+                try:
+                    duration = probe_media_duration_seconds(path)
+                except ChunkingError:
+                    pass
+                else:
+                    request_durations_seconds.append(duration)
+            return transcribe_with_provider(path, provider_config)
+
         start_seconds = parse_time_seconds(args.start) if args.start else 0
         end_seconds = parse_time_seconds(args.end) if args.end else None
         validate_time_range(start_seconds, end_seconds)
@@ -951,9 +972,7 @@ def execute_options(args: CliOptions) -> int:
                             index, len(chunks), chunk.path.name, size_kib
                         )
                     )
-                    chunk_response = transcribe_with_provider(
-                        chunk.path, provider_config
-                    )
+                    chunk_response = transcribe_request(chunk.path)
                     responses.append(
                         offset_response_times(chunk_response, chunk.offset_ms)
                     )
@@ -975,7 +994,7 @@ def execute_options(args: CliOptions) -> int:
                 saved_upload_format = upload_format
                 size_kib = clip.path.stat().st_size / 1024
                 _echo(ui_text.transcribing_selected_range(clip.path.name, size_kib))
-                clip_response = transcribe_with_provider(clip.path, provider_config)
+                clip_response = transcribe_request(clip.path)
                 response = offset_response_times(clip_response, clip.offset_ms)
         elif should_prepare_whole_file_upload(args.compress, args.chunk_format):
             with tempfile.TemporaryDirectory(prefix=TEMP_DIR_PREFIX) as chunk_dir:
@@ -993,9 +1012,14 @@ def execute_options(args: CliOptions) -> int:
                 _echo(
                     ui_text.transcribing_compressed_upload(upload.path.name, size_kib)
                 )
-                response = transcribe_with_provider(upload.path, provider_config)
+                response = transcribe_request(upload.path)
         else:
-            response = transcribe_with_provider(args.audio_path, provider_config)
+            response = transcribe_request(args.audio_path)
+        cost_estimate = estimate_transcription_cost(
+            provider_config,
+            response,
+            request_durations_seconds=request_durations_seconds,
+        )
         response["meetdown"] = build_processing_options(
             args=args,
             provider_config=provider_config,
@@ -1003,6 +1027,12 @@ def execute_options(args: CliOptions) -> int:
             preprocessing=preprocessing,
             chunk_count=chunk_count,
             output_path=output_path,
+            cost_estimate=cost_estimate,
+        )
+        _echo(
+            ui_text.estimated_api_cost(
+                cost_estimate.display_amount(), cost_estimate.basis
+            )
         )
 
         if args.save_json:

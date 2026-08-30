@@ -185,8 +185,22 @@ If you already have a CLOVA Speech JSON response, convert it without calling the
 uvx meetdown --from-json examples/clova_response.sample.json -o sample.md --title "Sample Meeting"
 ```
 
-Generated Markdown includes a `Processing options` section with the provider, model, language,
-compression, chunking, range, timeout settings, and a replay command for the run.
+After an API-backed transcription, generated Markdown includes a `Processing options` section
+with the provider, model, language, compression, chunking, range, timeout settings, estimated
+API cost, and a replay command for the run. The CLI prints the same cost estimate. OpenAI estimates use
+provider-reported token usage when available and otherwise use the published estimated
+per-minute rate. Gemini estimates use provider-reported modality token usage for the standard
+paid tier. CLOVA estimates include base speech recognition at 5 KRW per 15-second request unit;
+speaker diarization and other optional feature charges are not included.
+
+Rates are maintained as dated list prices, with the pricing date and source saved alongside the
+estimate. Free-tier allowances, credits, taxes, and account-specific adjustments are excluded,
+so the provider invoice can differ. Cost is reported as unavailable for unrecognized models,
+custom OpenAI or Gemini endpoints, or responses without enough usage metadata. See the official
+[OpenAI](https://developers.openai.com/api/docs/pricing),
+[Gemini](https://ai.google.dev/gemini-api/docs/pricing), and
+[CLOVA](https://www.ncloud.com/product/aiService/clovaSpeech) pricing pages for current rates.
+
 Raw API keys are never written. They are stored only in masked form, such as
 `sk-p********7890`. Replay commands use `<...>` placeholders for secret values;
 replace them before running the command.
