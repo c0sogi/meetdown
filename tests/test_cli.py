@@ -32,6 +32,7 @@ from meetdown.constants import (
     DEFAULT_TIMEOUT_SECONDS,
     DEFAULT_WORD_ALIGNMENT,
     NO_COLOR_ENV,
+    PROVIDER_USAGES_KEY,
     PROVIDER_ENV_NAMES,
 )
 from meetdown.notion import NotionUploadConfig, NotionUploadError
@@ -291,7 +292,9 @@ def test_color_detection_can_be_forced_or_disabled(
 
 
 def test_cli_passes_omitted_provider_as_none(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     audio = tmp_path / "meeting.m4a"
     output = tmp_path / "meeting.md"
@@ -312,7 +315,13 @@ def test_cli_passes_omitted_provider_as_none(
     def fake_transcribe_with_provider(
         audio_path: object, config: ProviderConfig
     ) -> dict[str, object]:
-        return {"text": "Transcript", "segments": []}
+        return {
+            "text": "Transcript",
+            "segments": [],
+            PROVIDER_USAGES_KEY: [
+                {"type": "tokens", "input_tokens": 1_000, "output_tokens": 1_000}
+            ],
+        }
 
     monkeypatch.setattr(
         "meetdown.cli.resolve_provider_config", fake_resolve_provider_config
@@ -325,6 +334,11 @@ def test_cli_passes_omitted_provider_as_none(
 
     assert exit_code == 0
     assert captured["provider"] is None
+    terminal_output = capsys.readouterr().out
+    assert "Estimated API cost: $0.0125 USD" in terminal_output
+    markdown = output.read_text(encoding="utf-8")
+    assert "- estimated_cost: `$0.0125 USD`" in markdown
+    assert "- input_tokens: `1000`" in markdown
 
 
 def test_cli_reports_missing_audio_before_credentials(

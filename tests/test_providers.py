@@ -1,8 +1,9 @@
+import json
 from pathlib import Path
 
 import pytest
 
-from meetdown.constants import PROVIDER_ENV_NAMES
+from meetdown.constants import PROVIDER_ENV_NAMES, PROVIDER_USAGES_KEY
 from meetdown.json_types import JsonObject
 from meetdown.providers import (
     GEMINI_DEFAULT_MODEL,
@@ -16,6 +17,8 @@ from meetdown.providers import (
     openai_transcriptions_url,
     provider_model,
     resolve_provider_config,
+    transcribe_gemini_file,
+    transcribe_openai_file,
     transcribe_with_provider,
 )
 from meetdown.text import gemini_transcription_prompt
@@ -24,6 +27,20 @@ from meetdown.text import gemini_transcription_prompt
 def clear_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in PROVIDER_ENV_NAMES:
         monkeypatch.delenv(name, raising=False)
+
+
+class StubResponse:
+    status_code = 200
+
+    def __init__(self, payload: object) -> None:
+        self.payload = payload
+        self.text = json.dumps(payload)
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> object:
+        return self.payload
 
 
 def test_normalize_provider_accepts_supported_names() -> None:
@@ -67,6 +84,80 @@ def test_provider_url_builders_accept_base_or_full_urls() -> None:
         )
         == "https://example.com/gemini-test:generateContent"
     )
+
+
+def test_openai_response_preserves_usage_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio = tmp_path / "meeting.wav"
+    audio.write_bytes(b"fake audio")
+    payload: JsonObject = {
+        "text": "Transcript",
+        "segments": [],
+        "usage": {"type": "tokens", "input_tokens": 100, "output_tokens": 20},
+    }
+
+    def fake_post(*args: object, **kwargs: object) -> StubResponse:
+        return StubResponse(payload)
+
+    monkeypatch.setattr("meetdown.providers.httpx.post", fake_post)
+
+    response = transcribe_openai_file(
+        audio,
+        ProviderConfig(
+            provider="openai",
+            language="ko-KR",
+            timeout_seconds=60,
+            word_alignment=False,
+            diarization=True,
+            api_key="test-key",
+        ),
+    )
+
+    assert response[PROVIDER_USAGES_KEY] == [payload["usage"]]
+
+
+def test_gemini_response_preserves_usage_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio = tmp_path / "meeting.wav"
+    audio.write_bytes(b"fake audio")
+    usage: JsonObject = {
+        "promptTokenCount": 100,
+        "promptTokensDetails": [{"modality": "AUDIO", "tokenCount": 90}],
+        "candidatesTokenCount": 20,
+    }
+    payload: JsonObject = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"text": json.dumps({"text": "Transcript", "segments": []})}
+                    ]
+                }
+            }
+        ],
+        "usageMetadata": usage,
+    }
+
+    def fake_post(*args: object, **kwargs: object) -> StubResponse:
+        return StubResponse(payload)
+
+    monkeypatch.setattr("meetdown.providers.httpx.post", fake_post)
+
+    response = transcribe_gemini_file(
+        audio,
+        ProviderConfig(
+            provider="gemini",
+            language="ko-KR",
+            timeout_seconds=60,
+            word_alignment=False,
+            diarization=True,
+            api_key="test-key",
+        ),
+    )
+
+    assert response[PROVIDER_USAGES_KEY] == [usage]
 
 
 def test_clova_language_is_required_even_when_user_asks_for_auto(

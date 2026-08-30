@@ -207,6 +207,10 @@ def wrote_file(path: object) -> str:
     return f"Wrote {path}"
 
 
+def estimated_api_cost(amount: str, basis: str) -> str:
+    return f"Estimated API cost: {amount} ({basis})"
+
+
 DEFAULTS_TITLE = "Current defaults"
 DEFAULTS_RUNTIME_SECTION = "Runtime"
 DEFAULTS_OUTPUT_SECTION = "Output"

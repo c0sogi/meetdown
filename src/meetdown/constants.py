@@ -136,6 +136,7 @@ PROVIDER_API_KEY_PLACEHOLDERS: Final[dict[ProviderName, str]] = {
 GENERIC_API_KEY_PLACEHOLDER: Final = "<API key>"
 
 PROCESSING_REPLAY_COMMAND_KEY: Final = "replay_command"
+PROVIDER_USAGES_KEY: Final = "provider_usages"
 
 COLOR_ENV: Final = "MEETDOWN_COLOR"
 NO_COLOR_ENV: Final = "NO_COLOR"
