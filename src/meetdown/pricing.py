@@ -42,6 +42,7 @@ _OPENAI_MINUTE_RATES: dict[str, Decimal] = {
 _GEMINI_TEXT_INPUT_RATE = Decimal("0.50")
 _GEMINI_AUDIO_INPUT_RATE = Decimal("1.00")
 _GEMINI_OUTPUT_RATE = Decimal("3.00")
+_GEMINI_STANDARD_SERVICE_TIERS = frozenset({"standard", "unspecified"})
 
 _CLOVA_UNIT_SECONDS = 15
 _CLOVA_BASE_RATE_KRW = Decimal(5)
@@ -260,7 +261,10 @@ def _gemini_usage_counts(
     output = 0
     for usage in usages:
         service_tier = usage.get("serviceTier")
-        if service_tier is not None and str(service_tier).lower() != "standard":
+        if (
+            service_tier is not None
+            and str(service_tier).lower() not in _GEMINI_STANDARD_SERVICE_TIERS
+        ):
             return None
 
         details = as_object_list(usage.get("promptTokensDetails"))

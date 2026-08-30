@@ -63,6 +63,7 @@ def test_gemini_uses_modality_and_output_tokens() -> None:
     response: JsonObject = {
         PROVIDER_USAGES_KEY: [
             {
+                "serviceTier": "unspecified",
                 "promptTokenCount": 33_000,
                 "promptTokensDetails": [
                     {"modality": "AUDIO", "tokenCount": 32_000},
@@ -80,6 +81,27 @@ def test_gemini_uses_modality_and_output_tokens() -> None:
     assert estimate.display_amount() == "$0.04 USD"
     assert estimate.input_tokens == 33_000
     assert estimate.output_tokens == 2_500
+
+
+def test_gemini_rejects_nonstandard_service_tier() -> None:
+    response: JsonObject = {
+        PROVIDER_USAGES_KEY: [
+            {
+                "serviceTier": "flex",
+                "promptTokenCount": 33_000,
+                "promptTokensDetails": [
+                    {"modality": "AUDIO", "tokenCount": 32_000},
+                    {"modality": "TEXT", "tokenCount": 1_000},
+                ],
+                "candidatesTokenCount": 2_000,
+            }
+        ]
+    }
+
+    estimate = estimate_transcription_cost(provider_config("gemini"), response)
+
+    assert not estimate.available
+    assert "standard-tier" in estimate.basis
 
 
 def test_clova_rounds_each_request_to_fifteen_seconds() -> None:
