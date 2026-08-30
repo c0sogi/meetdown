@@ -59,6 +59,19 @@ def test_openai_duration_model_uses_reported_seconds() -> None:
     assert estimate.billable_audio_seconds == 120
 
 
+def test_openai_token_model_falls_back_to_complete_audio_duration() -> None:
+    estimate = estimate_transcription_cost(
+        provider_config("openai"),
+        {},
+        request_durations_seconds=[60, 60],
+    )
+
+    assert estimate.amount == Decimal("0.012")
+    assert estimate.billable_audio_seconds == 120
+    assert estimate.input_tokens is None
+    assert estimate.basis == "Uploaded audio duration and OpenAI estimated minute rate"
+
+
 def test_gemini_uses_modality_and_output_tokens() -> None:
     response: JsonObject = {
         PROVIDER_USAGES_KEY: [

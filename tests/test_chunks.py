@@ -116,3 +116,18 @@ def test_merge_responses_combines_text_segments_and_confidence() -> None:
         {"input_tokens": 100},
         {"input_tokens": 200},
     ]
+
+
+def test_merge_responses_omits_incomplete_provider_usage() -> None:
+    responses: list[JsonObject] = [
+        {
+            "text": "first",
+            "segments": [],
+            PROVIDER_USAGES_KEY: [{"input_tokens": 100}],
+        },
+        {"text": "second", "segments": []},
+    ]
+
+    merged = merge_responses(responses)
+
+    assert PROVIDER_USAGES_KEY not in merged

@@ -375,6 +375,8 @@ def merge_responses(responses: list[JsonObject]) -> JsonObject:
     adjusted_segments: list[object] = []
     adjusted_events: list[object] = []
     provider_usages: list[object] = []
+    # Partial per-request usage would understate the cost of a chunked run.
+    provider_usages_complete = bool(responses)
     texts: list[str] = []
     confidences: list[float] = []
 
@@ -392,8 +394,10 @@ def merge_responses(responses: list[JsonObject]) -> JsonObject:
             adjusted_events.extend(events)
 
         usages = as_object_list(response.get(PROVIDER_USAGES_KEY))
-        if usages is not None:
+        if usages and all(as_json_object(usage) is not None for usage in usages):
             provider_usages.extend(usages)
+        else:
+            provider_usages_complete = False
 
         confidence = as_number(response.get("confidence"))
         if confidence is not None:
@@ -407,7 +411,7 @@ def merge_responses(responses: list[JsonObject]) -> JsonObject:
     }
     if adjusted_events:
         merged["events"] = adjusted_events
-    if provider_usages:
+    if provider_usages_complete:
         merged[PROVIDER_USAGES_KEY] = provider_usages
     if confidences:
         merged["confidence"] = sum(confidences) / len(confidences)
