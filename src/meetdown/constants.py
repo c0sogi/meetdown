@@ -1,6 +1,7 @@
 from typing import Final, Literal
 
 ProviderName = Literal["clova", "openai", "gemini"]
+ProviderSource = Literal["option", "environment", "credentials"]
 NotionDuplicateStrategy = Literal[
     "ask", "timestamp", "counter", "create_anyway", "skip"
 ]
@@ -38,6 +39,14 @@ GEMINI_DEFAULT_MODEL: Final = "gemini-3-flash-preview"
 GEMINI_DEFAULT_API_URL: Final = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_GENERATE_CONTENT_SUFFIX: Final = ":generateContent"
 GEMINI_INLINE_LIMIT_BYTES: Final = 19 * 1024 * 1024
+OPENAI_MAX_UPLOAD_BYTES: Final = 25 * 1024 * 1024
+# gpt-4o-transcribe-diarize rejects longer audio; whisper-1 only has the size limit.
+OPENAI_MAX_AUDIO_SECONDS: Final = 1400.0
+OPENAI_PREFERRED_CHUNK_SECONDS: Final = 600.0
+GEMINI_PREFERRED_CHUNK_SECONDS: Final = 1200.0
+LIMIT_RETRY_CHUNK_SECONDS: Final = 600.0
+AUTO_CHUNK_SAFETY_RATIO: Final = 0.9
+MIN_AUTO_CHUNK_SECONDS: Final = 60.0
 
 CLOVA_SPEECH_INVOKE_URL_ENV: Final = "CLOVA_SPEECH_INVOKE_URL"
 CLOVA_SPEECH_SECRET_KEY_ENV: Final = "CLOVA_SPEECH_SECRET_KEY"
@@ -50,6 +59,7 @@ GOOGLE_API_KEY_ENV: Final = "GOOGLE_API_KEY"
 GOOGLE_API_URL_ENV: Final = "GOOGLE_API_URL"
 MEETDOWN_API_KEY_ENV: Final = "MEETDOWN_API_KEY"
 MEETDOWN_API_URL_ENV: Final = "MEETDOWN_API_URL"
+MEETDOWN_PROVIDER_ENV: Final = "MEETDOWN_PROVIDER"
 NOTION_TOKEN_ENV: Final = "NOTION_TOKEN"
 NOTION_PARENT_PAGE_ID_ENV: Final = "NOTION_PARENT_PAGE_ID"
 PROVIDER_ENV_NAMES: Final[tuple[str, ...]] = (
@@ -64,6 +74,7 @@ PROVIDER_ENV_NAMES: Final[tuple[str, ...]] = (
     GOOGLE_API_URL_ENV,
     MEETDOWN_API_KEY_ENV,
     MEETDOWN_API_URL_ENV,
+    MEETDOWN_PROVIDER_ENV,
 )
 
 CLOVA_AUTO_DETECT_API_KEY_ENV_NAMES: Final = (CLOVA_SPEECH_SECRET_KEY_ENV,)
@@ -119,6 +130,27 @@ CHUNK_FORMAT_FLAC: Final = "flac"
 CHUNK_FORMAT_MP3: Final = "mp3"
 CHUNK_FORMAT_WAV: Final = "wav"
 CHUNK_FORMAT_CHOICES: Final = (CHUNK_FORMAT_FLAC, CHUNK_FORMAT_MP3, CHUNK_FORMAT_WAV)
+# Upper bounds for 16 kHz mono uploads: mp3 at 64 kbps, FLAC never above PCM, PCM WAV.
+UPLOAD_BYTES_PER_SECOND: Final[dict[str, int]] = {
+    CHUNK_FORMAT_MP3: 8_000,
+    CHUNK_FORMAT_FLAC: 32_000,
+    CHUNK_FORMAT_WAV: 32_000,
+}
+
+CHUNKING_SOURCE_OPTION: Final = "option"
+CHUNKING_SOURCE_AUTO: Final = "auto"
+CHUNKING_SOURCE_RETRY: Final = "retry"
+
+ERROR_PROVIDER_AMBIGUOUS: Final = "provider_ambiguous"
+ERROR_PROVIDER_NOT_CONFIGURED: Final = "provider_not_configured"
+ERROR_PROVIDER_INVALID_DEFAULT: Final = "provider_invalid_default"
+ERROR_PROVIDER_CREDENTIALS_MISSING: Final = "provider_credentials_missing"
+ERROR_PROVIDER_LIMIT: Final = "provider_limit"
+ERROR_PROVIDER_FAILED: Final = "provider_error"
+ERROR_MEDIA: Final = "media_error"
+ERROR_INPUT_NOT_FOUND: Final = "input_not_found"
+ERROR_NOTION: Final = "notion_error"
+ERROR_INVALID_OPTION: Final = "invalid_option"
 
 NOTION_DUPLICATE_STRATEGIES: Final[tuple[NotionDuplicateStrategy, ...]] = (
     "ask",

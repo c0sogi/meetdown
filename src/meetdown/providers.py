@@ -2,6 +2,8 @@ import base64
 import json
 import mimetypes
 import os
+import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +21,10 @@ from meetdown.constants import (
     CLOVA_MODEL_DESCRIPTION,
     CLOVA_SUPPORTED_LANGUAGES,
     DEFAULT_DIARIZATION,
+    ERROR_PROVIDER_AMBIGUOUS,
+    ERROR_PROVIDER_CREDENTIALS_MISSING,
+    ERROR_PROVIDER_INVALID_DEFAULT,
+    ERROR_PROVIDER_NOT_CONFIGURED,
     GEMINI_API_KEY_ENV_NAMES,
     GEMINI_API_URL_ENV_NAMES,
     GEMINI_AUTO_DETECT_API_KEY_ENV_NAMES,
@@ -28,6 +34,7 @@ from meetdown.constants import (
     GEMINI_INLINE_LIMIT_BYTES,
     LANGUAGE_AUTO,
     MEETDOWN_API_KEY_ENV,
+    MEETDOWN_PROVIDER_ENV,
     OPENAI_API_KEY_ENV_NAMES,
     OPENAI_API_URL_ENV_NAMES,
     OPENAI_AUDIO_TRANSCRIPTIONS_PATH,
@@ -43,6 +50,7 @@ from meetdown.constants import (
     PROVIDER_USAGES_KEY,
     SUPPORTED_PROVIDERS,
     ProviderName,
+    ProviderSource,
 )
 from meetdown.json_types import (
     JsonObject,
@@ -65,8 +73,37 @@ _AUDIO_MIME_BY_SUFFIX = {
 }
 
 
+_LIMIT_ERROR_RE = re.compile(
+    r"longer than\s+[\d.]+\s+seconds which is the maximum"
+    r"|maximum content size"
+    r"|request entity too large"
+    r"|payload size exceeds"
+    r"|\b(?:file|audio|payload|request)\b[^\n]{0,40}\btoo large\b",
+    re.IGNORECASE,
+)
+
+
 class ProviderError(RuntimeError):
     """Raised when a speech provider rejects or cannot process a request."""
+
+
+class ProviderLimitError(ProviderError):
+    """Raised when one request exceeds a provider's audio duration or size limit."""
+
+
+class ProviderSelectionError(ValueError):
+    """Raised when meetdown cannot choose a provider or find its credentials.
+
+    ``code`` is a stable machine-readable reason, and ``candidates`` lists the
+    providers with configured credentials when the choice is ambiguous.
+    """
+
+    def __init__(
+        self, message: str, *, code: str, candidates: Sequence[str] = ()
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.candidates: tuple[str, ...] = tuple(candidates)
 
 
 @dataclass(frozen=True)
@@ -80,6 +117,19 @@ class ProviderConfig:
     api_key: str | None = None
     openai_model: str = OPENAI_DEFAULT_MODEL
     gemini_model: str = GEMINI_DEFAULT_MODEL
+    provider_source: ProviderSource = "option"
+
+
+def is_limit_error_message(status_code: int, body: str) -> bool:
+    return status_code == 413 or bool(_LIMIT_ERROR_RE.search(body))
+
+
+def _http_error(provider: str, response: httpx.Response) -> ProviderError:
+    body = response.text[:1000]
+    message = ui_text.provider_http_failed(provider, response.status_code, body)
+    if is_limit_error_message(response.status_code, response.text[:4000]):
+        return ProviderLimitError(message)
+    return ProviderError(message)
 
 
 def normalize_provider(value: str) -> ProviderName:
@@ -131,6 +181,20 @@ def _first_env(*names: str) -> str | None:
     return None
 
 
+def default_provider_from_env() -> ProviderName | None:
+    """Return the provider named by MEETDOWN_PROVIDER, if it is set."""
+    value = os.getenv(MEETDOWN_PROVIDER_ENV, "").strip()
+    if not value:
+        return None
+    try:
+        return normalize_provider(value)
+    except ValueError as exc:
+        raise ProviderSelectionError(
+            ui_text.default_provider_must_be_supported(value),
+            code=ERROR_PROVIDER_INVALID_DEFAULT,
+        ) from exc
+
+
 def infer_provider_from_credentials(
     *,
     api_url: str | None = None,
@@ -162,13 +226,22 @@ def infer_provider_from_credentials(
         return candidates[0]
 
     if len(candidates) > 1:
-        raise ValueError(ui_text.provider_is_ambiguous(candidates))
+        raise ProviderSelectionError(
+            ui_text.provider_is_ambiguous(candidates),
+            code=ERROR_PROVIDER_AMBIGUOUS,
+            candidates=candidates,
+        )
 
     generic_key = _first_value(api_key, _first_env(MEETDOWN_API_KEY_ENV))
     if generic_key:
-        raise ValueError(ui_text.provider_generic_key_is_ambiguous())
+        raise ProviderSelectionError(
+            ui_text.provider_generic_key_is_ambiguous(),
+            code=ERROR_PROVIDER_AMBIGUOUS,
+        )
 
-    raise ValueError(ui_text.provider_could_not_be_inferred())
+    raise ProviderSelectionError(
+        ui_text.provider_could_not_be_inferred(), code=ERROR_PROVIDER_NOT_CONFIGURED
+    )
 
 
 def provider_model(
@@ -238,16 +311,20 @@ def resolve_provider_config(
     clova_invoke_url: str | None = None,
     clova_secret_key: str | None = None,
 ) -> ProviderConfig:
-    normalized = (
-        normalize_provider(provider)
-        if provider
-        else infer_provider_from_credentials(
+    source: ProviderSource = "option"
+    if provider:
+        normalized = normalize_provider(provider)
+    elif (env_default := default_provider_from_env()) is not None:
+        normalized = env_default
+        source = "environment"
+    else:
+        normalized = infer_provider_from_credentials(
             api_url=api_url,
             api_key=api_key,
             clova_invoke_url=clova_invoke_url,
             clova_secret_key=clova_secret_key,
         )
-    )
+        source = "credentials"
     resolved_model = provider_model(normalized, model, diarization=diarization)
 
     if normalized == PROVIDER_CLOVA:
@@ -265,9 +342,15 @@ def resolve_provider_config(
             _first_env(*CLOVA_API_KEY_ENV_NAMES),
         )
         if not resolved_url:
-            raise ValueError(ui_text.clova_missing_api_url())
+            raise ProviderSelectionError(
+                ui_text.clova_missing_api_url(),
+                code=ERROR_PROVIDER_CREDENTIALS_MISSING,
+            )
         if not resolved_key:
-            raise ValueError(ui_text.clova_missing_api_key())
+            raise ProviderSelectionError(
+                ui_text.clova_missing_api_key(),
+                code=ERROR_PROVIDER_CREDENTIALS_MISSING,
+            )
         return ProviderConfig(
             provider=normalized,
             language=resolved_language,
@@ -276,12 +359,16 @@ def resolve_provider_config(
             diarization=diarization,
             api_url=resolved_url,
             api_key=resolved_key,
+            provider_source=source,
         )
 
     if normalized == PROVIDER_OPENAI:
         openai_key = _first_value(api_key, _first_env(*OPENAI_API_KEY_ENV_NAMES))
         if not openai_key:
-            raise ValueError(ui_text.openai_missing_api_key())
+            raise ProviderSelectionError(
+                ui_text.openai_missing_api_key(),
+                code=ERROR_PROVIDER_CREDENTIALS_MISSING,
+            )
         return ProviderConfig(
             provider=normalized,
             language=language,
@@ -294,6 +381,7 @@ def resolve_provider_config(
             ),
             api_key=openai_key,
             openai_model=resolved_model or OPENAI_DEFAULT_MODEL,
+            provider_source=source,
         )
 
     gemini_key = _first_value(
@@ -301,7 +389,9 @@ def resolve_provider_config(
         _first_env(*GEMINI_API_KEY_ENV_NAMES),
     )
     if not gemini_key:
-        raise ValueError(ui_text.gemini_missing_api_key())
+        raise ProviderSelectionError(
+            ui_text.gemini_missing_api_key(), code=ERROR_PROVIDER_CREDENTIALS_MISSING
+        )
     return ProviderConfig(
         provider=normalized,
         language=language,
@@ -314,6 +404,7 @@ def resolve_provider_config(
         ),
         api_key=gemini_key,
         gemini_model=resolved_model or GEMINI_DEFAULT_MODEL,
+        provider_source=source,
     )
 
 
@@ -340,6 +431,8 @@ def transcribe_with_provider(
                 timeout_seconds=config.timeout_seconds,
             )
         except ClovaSpeechError as exc:
+            if exc.status_code == 413:
+                raise ProviderLimitError(str(exc)) from exc
             raise ProviderError(str(exc)) from exc
 
     if config.provider == PROVIDER_OPENAI:
@@ -464,11 +557,7 @@ def transcribe_openai_file(
     try:
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
-        raise ProviderError(
-            ui_text.provider_http_failed(
-                "OpenAI", response.status_code, response.text[:1000]
-            )
-        ) from exc
+        raise _http_error("OpenAI", response) from exc
 
     try:
         loaded: object = response.json()
@@ -510,7 +599,7 @@ def transcribe_gemini_file(
     if config.api_key is None:
         raise ProviderError(ui_text.missing_api_key(config.provider))
     if path.stat().st_size > GEMINI_INLINE_LIMIT_BYTES:
-        raise ProviderError(ui_text.GEMINI_INLINE_LIMIT_EXCEEDED)
+        raise ProviderLimitError(ui_text.GEMINI_INLINE_LIMIT_EXCEEDED)
 
     encoded = base64.b64encode(path.read_bytes()).decode("ascii")
     body: JsonObject = {
@@ -538,11 +627,7 @@ def transcribe_gemini_file(
     try:
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
-        raise ProviderError(
-            ui_text.provider_http_failed(
-                "Gemini", response.status_code, response.text[:1000]
-            )
-        ) from exc
+        raise _http_error("Gemini", response) from exc
 
     try:
         loaded: object = response.json()

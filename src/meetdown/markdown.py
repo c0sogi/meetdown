@@ -76,6 +76,10 @@ def render_markdown(
     )
     if confidence is not None:
         lines.append(f"- {ui_text.MARKDOWN_CONFIDENCE_LABEL}: `{confidence}`")
+    quality = as_json_object(response.get("quality"))
+    quality_summary = (quality or {}).get("summary") or (quality or {}).get("status")
+    if quality_summary:
+        lines.append(f"- {ui_text.MARKDOWN_QUALITY_LABEL}: `{quality_summary}`")
 
     if processing_options:
         lines.extend(["", ui_text.MARKDOWN_PROCESSING_HEADING, ""])
