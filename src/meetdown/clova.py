@@ -18,6 +18,10 @@ from meetdown.json_types import JsonObject, as_json_object
 class ClovaSpeechError(RuntimeError):
     """Raised when CLOVA Speech rejects or fails a request."""
 
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 DEFAULT_PARAMS: JsonObject = {
     "completion": CLOVA_COMPLETION_SYNC,
@@ -90,7 +94,8 @@ def transcribe_file(
     except httpx.HTTPStatusError as exc:
         body = response.text[:1000]
         raise ClovaSpeechError(
-            ui_text.clova_http_failed(response.status_code, body)
+            ui_text.clova_http_failed(response.status_code, body),
+            status_code=response.status_code,
         ) from exc
 
     try:

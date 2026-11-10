@@ -7,6 +7,7 @@ from meetdown.constants import (
     GEMINI_API_KEY_ENV,
     GOOGLE_API_KEY_ENV,
     LANGUAGE_AUTO,
+    MEETDOWN_PROVIDER_ENV,
     NOTION_PARENT_PAGE_ID_ENV,
     NOTION_TOKEN_ENV,
     OPENAI_API_KEY_ENV,
@@ -16,9 +17,10 @@ HELP_DESCRIPTION = """\
 Turn a meeting recording into a Markdown transcript.
 
 meetdown can use CLOVA Speech, OpenAI, or Gemini. When --provider is omitted,
-it auto-detects the provider from configured provider-specific credentials.
+it uses MEETDOWN_PROVIDER, or the only provider with configured credentials.
 Common inputs include m4a, mp3, wav, flac, and mp4 files.
-meetdown extracts audio and prepares a provider-friendly upload copy before transcription.
+meetdown extracts audio and prepares a provider-friendly upload copy before transcription,
+and splits long recordings automatically when they exceed a provider's request limit.
 """
 
 ARG_AUDIO_PATH_HELP = (
@@ -26,8 +28,8 @@ ARG_AUDIO_PATH_HELP = (
 )
 ARG_PROVIDER_GROUP = "provider and credentials"
 ARG_PROVIDER_HELP = (
-    "Speech provider to use. Auto-detected from provider-specific credentials "
-    "when omitted."
+    f"Speech provider to use. Defaults to {MEETDOWN_PROVIDER_ENV}, then to the only "
+    "provider with configured credentials."
 )
 ARG_API_KEY_HELP = "Generic provider API key. Uses provider-specific environment variables when omitted."
 ARG_API_URL_HELP = (
@@ -42,10 +44,18 @@ ARG_FROM_JSON_HELP = (
     "Convert an existing normalized provider JSON response instead of calling the API."
 )
 ARG_SAVE_JSON_HELP = "Save the normalized transcription JSON to this path."
+ARG_JSON_HELP = (
+    "Print a machine-readable JSON summary to stdout. Progress messages go to stderr."
+)
 ARG_MEDIA_GROUP = "media selection and upload size"
 ARG_CHUNK_DURATION_HELP = (
     "Split media before upload. Accepts seconds or s/m/h suffixes, "
-    "such as 600, 10m, or 1h."
+    "such as 600, 10m, or 1h. When omitted, media longer than the provider's "
+    "request limit is split automatically."
+)
+ARG_NO_AUTO_CHUNK_HELP = (
+    "Do not split long media automatically or retry in chunks after a provider "
+    "limit error."
 )
 ARG_CHUNK_FORMAT_HELP = "Exact temporary upload format. Overrides --compress."
 ARG_COMPRESS_HELP = "Upload compression preset."
@@ -85,6 +95,7 @@ MARKDOWN_SOURCE_FILE_LABEL = "Source file"
 MARKDOWN_CREATED_AT_LABEL = "Created at"
 MARKDOWN_LANGUAGE_LABEL = "Recognition language"
 MARKDOWN_CONFIDENCE_LABEL = "Overall confidence"
+MARKDOWN_QUALITY_LABEL = "Quality check"
 MARKDOWN_PROCESSING_HEADING = "## Processing options"
 MARKDOWN_REPLAY_COMMAND_LABEL = "Replay command:"
 MARKDOWN_PLACEHOLDER_NOTE = (
@@ -125,7 +136,14 @@ def provider_must_be_supported() -> str:
 def provider_is_ambiguous(configured: Iterable[str]) -> str:
     return (
         "provider is ambiguous because multiple provider API keys are configured: "
-        f"{comma_list(configured)}. Pass --provider explicitly."
+        f"{comma_list(configured)}. Pass --provider explicitly or set "
+        f"{MEETDOWN_PROVIDER_ENV}."
+    )
+
+
+def default_provider_must_be_supported(value: str) -> str:
+    return (
+        f"{MEETDOWN_PROVIDER_ENV} must be one of: clova, openai, gemini (got {value!r})"
     )
 
 
@@ -138,8 +156,8 @@ def provider_generic_key_is_ambiguous() -> str:
 
 def provider_could_not_be_inferred() -> str:
     return (
-        "provider could not be inferred. Pass --provider or set exactly one of "
-        f"{comma_list(AUTO_DETECT_API_KEY_ENV_NAMES)}."
+        f"provider could not be inferred. Pass --provider, set {MEETDOWN_PROVIDER_ENV}, "
+        f"or set exactly one of {comma_list(AUTO_DETECT_API_KEY_ENV_NAMES)}."
     )
 
 
@@ -211,6 +229,88 @@ def estimated_api_cost(amount: str, basis: str) -> str:
     return f"Estimated API cost: {amount} ({basis})"
 
 
+def warning(message: str) -> str:
+    return f"Warning: {message}"
+
+
+def auto_chunk_reason(
+    provider: str,
+    limit_seconds: float,
+    threshold_seconds: float,
+    duration_seconds: float,
+) -> str:
+    return (
+        f"{provider} accepts about {limit_seconds:.0f} s per request, meetdown splits "
+        f"media over {threshold_seconds:.0f} s to stay clear of that limit, and the "
+        f"media is {duration_seconds:.0f} s"
+    )
+
+
+def auto_chunking(chunk_label: str, reason: str) -> str:
+    return f"Splitting media into {chunk_label} chunks because {reason}."
+
+
+LIMIT_RETRY_REASON = "the provider rejected the whole file as too long or too large"
+
+
+def retrying_with_chunks(chunk_label: str) -> str:
+    return f"Retrying in {chunk_label} chunks because {LIMIT_RETRY_REASON}."
+
+
+def processing_chunking(source: str, reason: str | None) -> str:
+    return f"{source} ({reason})" if reason else source
+
+
+SPEAKER_LABELS_RESET_PER_CHUNK = (
+    "speaker labels restart in each chunk, so the same label in different chunks "
+    "may belong to different people"
+)
+NO_TIMESTAMPED_SEGMENTS = (
+    "the provider returned no timestamped segments; only full text is available"
+)
+
+
+def quality_detail_repetition(count: int) -> str:
+    return f"repetition {count}"
+
+
+def quality_detail_speech_rate(count: int) -> str:
+    return f"implausible speech rate {count}"
+
+
+def quality_detail_language(count: int) -> str:
+    return f"Latin-script segments {count}"
+
+
+def quality_summary(status: str, suspect_share: float, details: Iterable[str]) -> str:
+    detail_list = list(details)
+    if status == "ok":
+        return status
+    suffix = f"; {comma_list(detail_list)}" if detail_list else ""
+    return f"{status}: {suspect_share:.0%} suspect{suffix}"
+
+
+def quality_warning(summary: str) -> str:
+    return (
+        f"possible transcription hallucination ({summary}). Do not rely on names, "
+        "dates, numbers, or decisions in flagged parts without checking the audio"
+    )
+
+
+def latin_script_warning(ratio: float) -> str:
+    return (
+        f"{ratio:.0%} of the letters are Latin script in a Korean transcript; Korean "
+        "speech may have been transcribed as English"
+    )
+
+
+QUALITY_RECOMMENDATIONS = (
+    "Re-transcribe with another provider, or with --no-diarization, and compare.",
+    "Re-transcribe key ranges with --start and --end to confirm names, dates, "
+    "and numbers.",
+)
+
+
 DEFAULTS_TITLE = "Current defaults"
 DEFAULTS_RUNTIME_SECTION = "Runtime"
 DEFAULTS_OUTPUT_SECTION = "Output"
@@ -262,6 +362,10 @@ def defaults_provider_setting(provider: str, setting: str) -> str:
 
 def defaults_provider_inference_error(_error: object) -> str:
     return DEFAULTS_NOT_INFERRED
+
+
+def defaults_provider_from_environment(value: str) -> str:
+    return f"{value} ({MEETDOWN_PROVIDER_ENV})"
 
 
 def notion_extra_missing() -> str:

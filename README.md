@@ -5,8 +5,10 @@
 The CLI sends a local audio or video file to a speech provider, normalizes the
 response, and writes a `.md` file with the full text and speaker-by-speaker
 transcript when the provider returns speaker information. When `--provider` is
-omitted, meetdown auto-detects the provider from configured provider-specific
-credentials.
+omitted, meetdown uses `MEETDOWN_PROVIDER`, or the only provider with configured
+credentials. Recordings longer than a provider's request limit are split
+automatically, and each transcript gets a quick quality check for common
+speech-recognition hallucinations.
 
 ## Install and run
 
@@ -108,10 +110,18 @@ uvx "meetdown[notion]" transcribe meeting.m4a -o meeting.md --notion --notion-pa
 
 ## Providers
 
-If `--provider` is omitted, meetdown picks a provider only when exactly one
-provider-specific API key is configured. Pass `--provider` explicitly when more
-than one provider key is present, or when you pass only a generic `--api-key` or
-`MEETDOWN_API_KEY`.
+If `--provider` is omitted, meetdown uses the provider named in
+`MEETDOWN_PROVIDER`. Without it, meetdown picks a provider only when exactly one
+provider-specific API key is configured. When several provider keys are present
+and no default is set, meetdown stops and lists them instead of guessing:
+
+```powershell
+$env:MEETDOWN_PROVIDER="openai"   # clova, openai, or gemini
+uvx meetdown meeting.m4a -o meeting.md
+```
+
+Pass `--provider` explicitly to override the default for one run, or when you
+pass only a generic `--api-key` or `MEETDOWN_API_KEY`.
 
 CLOVA Speech can be selected automatically when you provide a CLOVA Invoke URL
 and key:
@@ -130,23 +140,37 @@ endpoint or base URL:
 
 ```powershell
 $env:OPENAI_API_KEY="your-openai-key"
-uvx meetdown meeting.m4a -o meeting.md --chunk-duration 10m
+uvx meetdown meeting.m4a -o meeting.md
 uvx meetdown meeting.m4a -o meeting.md --provider openai --api-url "https://api.openai.com/v1"
 
 $env:GEMINI_API_KEY="your-gemini-key"
-uvx meetdown meeting.m4a -o meeting.md --chunk-duration 10m
+uvx meetdown meeting.m4a -o meeting.md
 ```
 
 Use `--model` to override the provider default model. CLOVA does not support
 `--model`; the CLOVA Speech model is determined by the Invoke URL/domain.
 OpenAI defaults to a diarization-capable transcription model when diarization is
 enabled, and to a smaller transcription model when `--no-diarization` is used.
-Gemini uses inline audio requests, so use `--chunk-duration` for larger files.
+Gemini uses inline audio requests, so larger files are split automatically.
 
 ## Chunk long recordings
 
-Use `--chunk-duration` when a recording is too long for one sync upload. The
-CLI extracts audio chunks with `ffmpeg`, sends each chunk to the selected provider,
+meetdown checks the selected media length before uploading. When it would come
+within 10% of one request's limit, the recording is split automatically:
+
+| Provider | Limit per request | Automatic chunk length |
+| --- | --- | --- |
+| OpenAI | 1400 s of audio (diarization models) and 25 MB | 10 minutes |
+| Gemini | about 19 MB of inline audio | up to 20 minutes |
+| CLOVA Speech | no client-side limit | not split |
+
+If a provider still rejects the whole file as too long or too large, meetdown
+retries once in 10-minute chunks. Pass `--chunk-duration` to choose the chunk
+length yourself, or `--no-auto-chunk` to send the file as one request. Speaker
+labels restart in each chunk, so the same label in two chunks may be two
+different people.
+
+The CLI extracts audio chunks with `ffmpeg`, sends each chunk to the selected provider,
 shifts segment timestamps back to the original file timeline, and writes one Markdown file.
 If your PC does not have system `ffmpeg`, meetdown falls back to the bundled
 `imageio-ffmpeg` executable installed with the package. If system `ffprobe` is
@@ -201,9 +225,39 @@ custom OpenAI or Gemini endpoints, or responses without enough usage metadata. S
 [Gemini](https://ai.google.dev/gemini-api/docs/pricing), and
 [CLOVA](https://www.ncloud.com/product/aiService/clovaSpeech) pricing pages for current rates.
 
-Raw API keys are never written. They are stored only in masked form, such as
-`sk-p********7890`. Replay commands use `<...>` placeholders for secret values;
-replace them before running the command.
+API keys are never written, not even in masked form; the Markdown only records
+whether a key was configured. Replay commands use `<...>` placeholders for secret
+values; replace them before running the command.
+
+## Quality check
+
+Some speech models loop on a phrase, emit text faster than anyone can speak, or
+translate speech into English instead of transcribing it. meetdown scores every
+transcript for these patterns without extra API calls and writes the result to
+the Markdown metadata, such as `Quality check: poor: 47% suspect; repetition 3`.
+`ok` means nothing was flagged, `review` means isolated problems, and `poor`
+means a large share of the text is suspect. The Latin-script check runs when
+`--language` starts with `ko`. When a transcript is flagged, re-transcribe with
+another provider or with `--no-diarization`, and re-transcribe key ranges with
+`--start` and `--end` before relying on names, dates, or numbers.
+
+## Automation
+
+Pass `--json` to print one JSON object to stdout when the run ends. Progress
+messages move to stderr, so scripts and agents can parse stdout directly:
+
+```powershell
+uvx meetdown meeting.m4a -o meeting.md --language ko-KR --json
+```
+
+The summary includes the provider and how it was chosen (`option`,
+`environment`, or `credentials`), the media duration, chunking (`option`, `auto`,
+or `retry`), segment counts, the cost estimate, the quality report, and warnings.
+Failures print `{"status": "error", "code": ..., "message": ...}` and exit with
+code 1. Codes include `provider_ambiguous` (with `candidates`),
+`provider_not_configured`, `provider_invalid_default`,
+`provider_credentials_missing`, `provider_limit`, `provider_error`,
+`media_error`, `input_not_found`, `notion_error`, and `invalid_option`.
 
 When a provider returns unnamed speakers, meetdown writes speaker placeholders
 like `[[SPEAKER_1]]` and `[[SPEAKER_2]]`. These are intentionally easy to find
